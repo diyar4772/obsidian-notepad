@@ -12,6 +12,10 @@ On first start the panel opens under the Calendar view in the right sidebar, or 
 
 On a Wayland session (the default on Fedora, recent KDE Plasma and GNOME), Obsidian only sees the clipboard while its window is focused. Copies you make in other apps while Obsidian is in the background aren't seen one by one; when you switch back, only the last one is recorded. Copies made inside Obsidian are always recorded. Windows, macOS and Linux on X11 don't have this limit.
 
+## Requirements
+
+Obsidian 1.13 or newer. On older versions Obsidian installs Notepad 1.0.1 instead.
+
 ## Settings
 
 - Show or hide each tab.

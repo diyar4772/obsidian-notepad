@@ -1,4 +1,4 @@
-import { App, Platform, PluginSettingTab, Setting } from "obsidian";
+import { App, Platform, PluginSettingTab } from "obsidian";
 import type { SettingDefinitionItem } from "obsidian";
 import type NotepadPlugin from "./main";
 
@@ -72,8 +72,6 @@ export function sanitizeSettings(raw: unknown): NotepadSettings {
   };
 }
 
-type ColorKey = "accentColor" | "backgroundColor" | "textColor";
-
 const SAVE_FOLDER_DESC = "Folder for notes saved from the scratch page. Leave empty for the vault root.";
 const CLIPBOARD_DESC = Platform.isDesktopApp
   ? "Remember text you copy while Obsidian is running, in any app. On Linux with Wayland, copies made in other apps are only seen when you switch back to Obsidian."
@@ -84,9 +82,8 @@ export class NotepadSettingTab extends PluginSettingTab {
     super(app, plugin);
   }
 
-  // ───────────── Obsidian 1.13+: declarative settings (also indexed by the settings search) ─────────────
-  // Obsidian calls getSettingDefinitions() and skips display(); older versions only call display().
-  // Keep both in sync when adding or changing a setting.
+  // Declarative settings (Obsidian 1.13+, the minimum version): Obsidian renders the page from these
+  // definitions and indexes them for the settings search.
 
   getSettingDefinitions(): SettingDefinitionItem[] {
     const d = DEFAULT_SETTINGS;
@@ -148,7 +145,7 @@ export class NotepadSettingTab extends PluginSettingTab {
                 const st = this.plugin.settings;
                 st.accentColor = st.backgroundColor = st.textColor = "";
                 await this.plugin.saveSettings();
-                (this as { update?: () => void }).update?.();
+                this.update();
               }),
         ],
         items: [
@@ -175,126 +172,5 @@ export class NotepadSettingTab extends PluginSettingTab {
       : { ...settings, [key]: key === "saveFolder" && typeof value === "string" ? value.trim().replace(/^\/+|\/+$/g, "") : value };
     this.plugin.settings = sanitizeSettings(next);
     await this.plugin.saveSettings();
-  }
-
-  // ───────────── Obsidian < 1.13: imperative settings ─────────────
-
-  display(): void {
-    const { containerEl } = this;
-    const s = this.plugin.settings;
-    containerEl.empty();
-
-    new Setting(containerEl).setName("Tabs").setHeading();
-    for (const id of TAB_IDS) {
-      new Setting(containerEl).setName(`Show ${TAB_LABELS[id].toLowerCase()} tab`).addToggle((t) =>
-        t.setValue(s.tabs[id]).onChange(async (v) => {
-          s.tabs[id] = v;
-          await this.plugin.saveSettings();
-        })
-      );
-    }
-
-    new Setting(containerEl).setName("Notes").setHeading();
-    new Setting(containerEl)
-      .setName("Save folder")
-      .setDesc(SAVE_FOLDER_DESC)
-      .addText((t) =>
-        t.setPlaceholder("Inbox").setValue(s.saveFolder).onChange(async (v) => {
-          s.saveFolder = v.trim().replace(/^\/+|\/+$/g, "");
-          await this.plugin.saveSettings();
-        })
-      );
-    new Setting(containerEl).setName("Open the note after saving").addToggle((t) =>
-      t.setValue(s.openSavedNote).onChange(async (v) => {
-        s.openSavedNote = v;
-        await this.plugin.saveSettings();
-      })
-    );
-    new Setting(containerEl)
-      .setName("Clear after saving")
-      .setDesc("Empty the scratch page after it is saved as a note or added to the daily note.")
-      .addToggle((t) =>
-        t.setValue(s.clearAfterSave).onChange(async (v) => {
-          s.clearAfterSave = v;
-          await this.plugin.saveSettings();
-        })
-      );
-    new Setting(containerEl).setName("Font size").addSlider((sl) =>
-      sl
-        .setLimits(10, 28, 1)
-        .setValue(s.fontSize)
-        .onChange(async (v) => {
-          s.fontSize = v;
-          await this.plugin.saveSettings();
-        })
-    );
-
-    new Setting(containerEl).setName("Clipboard").setHeading();
-    new Setting(containerEl)
-      .setName("Record clipboard history")
-      .setDesc(CLIPBOARD_DESC)
-      .addToggle((t) =>
-        t.setValue(s.clipboardWatch).onChange(async (v) => {
-          s.clipboardWatch = v;
-          await this.plugin.saveSettings();
-        })
-      );
-    new Setting(containerEl)
-      .setName("History size")
-      .setDesc("Pinned entries don't count toward the limit.")
-      .addText((t) =>
-        t.setValue(String(s.clipboardMax)).onChange(async (v) => {
-          s.clipboardMax = sanitizeSettings({ clipboardMax: Number(v) }).clipboardMax;
-          await this.plugin.saveSettings();
-        })
-      );
-    new Setting(containerEl)
-      .setName("Check interval (ms)")
-      .setDesc("How often the system clipboard is checked.")
-      .addText((t) =>
-        t.setValue(String(s.clipboardInterval)).onChange(async (v) => {
-          s.clipboardInterval = sanitizeSettings({ clipboardInterval: Number(v) }).clipboardInterval;
-          await this.plugin.saveSettings();
-        })
-      );
-
-    new Setting(containerEl).setName("Timebox").setHeading();
-    new Setting(containerEl)
-      .setName("Days of history")
-      .setDesc("How many days of finished sessions to list.")
-      .addText((t) =>
-        t.setValue(String(s.timeboxDays)).onChange(async (v) => {
-          s.timeboxDays = sanitizeSettings({ timeboxDays: Number(v) }).timeboxDays;
-          await this.plugin.saveSettings();
-        })
-      );
-
-    new Setting(containerEl).setName("Colors").setHeading();
-    this.color("Accent color", "Tabs, buttons and progress bars.", "accentColor");
-    this.color("Background color", "", "backgroundColor");
-    this.color("Text color", "", "textColor");
-  }
-
-  private color(name: string, desc: string, key: ColorKey): void {
-    const s = this.plugin.settings;
-    new Setting(this.containerEl)
-      .setName(name)
-      .setDesc(desc || "Leave on reset to follow the theme.")
-      .addColorPicker((c) =>
-        c.setValue(s[key] || "#888888").onChange(async (v) => {
-          s[key] = v;
-          await this.plugin.saveSettings();
-        })
-      )
-      .addExtraButton((b) =>
-        b
-          .setIcon("rotate-ccw")
-          .setTooltip("Follow the theme")
-          .onClick(async () => {
-            s[key] = "";
-            await this.plugin.saveSettings();
-            this.display();
-          })
-      );
   }
 }
