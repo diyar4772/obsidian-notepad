@@ -1,0 +1,176 @@
+/* Notepad: all colors come from theme variables unless the user picks custom ones in the settings. */
+.notepad-view {
+  --np-accent: var(--notepad-accent, var(--interactive-accent));
+  --np-bg: var(--notepad-bg, transparent);
+  --np-text: var(--notepad-text, var(--text-normal));
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2);
+  background-color: var(--np-bg);
+  color: var(--np-text);
+  overflow: hidden;
+}
+
+/* ── tabs ── */
+.notepad-tabs {
+  display: flex;
+  gap: var(--size-2-1);
+  padding: var(--size-2-1);
+  border-radius: var(--radius-m);
+  background-color: var(--background-modifier-hover);
+  flex-shrink: 0;
+}
+.notepad-tabs.is-hidden { display: none; }
+.notepad-tab {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--size-2-2);
+  min-width: 0;
+  padding: var(--size-2-2) var(--size-2-3);
+  border-radius: var(--radius-s);
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+}
+.notepad-tab:hover { color: var(--np-text); background-color: var(--background-modifier-hover); }
+.notepad-tab.is-active {
+  color: var(--np-accent);
+  background-color: var(--background-primary);
+  font-weight: var(--font-semibold);
+}
+.notepad-tab-icon { display: flex; }
+.notepad-tab-icon svg { width: var(--icon-s); height: var(--icon-s); }
+.notepad-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── shared ── */
+.notepad-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.notepad-toolbar { display: flex; align-items: center; gap: var(--size-2-2); flex-shrink: 0; }
+.notepad-spacer { flex: 1; }
+.notepad-icon-button.is-armed { color: var(--text-error); background-color: var(--background-modifier-error-hover); }
+.notepad-icon-button.is-active { color: var(--np-accent); }
+.notepad-text-button {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  background-color: var(--np-accent);
+  color: var(--text-on-accent);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+}
+.notepad-text-button svg { width: var(--icon-xs); height: var(--icon-xs); }
+.notepad-empty, .notepad-hint {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  text-align: center;
+  padding: var(--size-4-2);
+}
+.notepad-hint { padding: 0; text-align: left; font-size: var(--font-ui-smaller); }
+.notepad-section { display: flex; flex-direction: column; gap: var(--size-2-2); }
+.notepad-section:empty { display: none; }
+.notepad-heading {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ── notes ── */
+.notepad-scratch {
+  flex: 1 1 auto;
+  min-height: 120px;
+  width: 100%;
+  resize: none;
+  padding: var(--size-4-2);
+  border-radius: var(--radius-m);
+  border: 1px solid var(--background-modifier-border);
+  background-color: var(--background-primary);
+  color: var(--np-text);
+  font-size: var(--notepad-font-size, var(--font-text-size));
+  font-family: var(--font-text);
+  line-height: var(--line-height-normal);
+}
+.notepad-scratch:focus { border-color: var(--np-accent); box-shadow: none; }
+.notepad-footer { color: var(--text-faint); font-size: var(--font-ui-smaller); text-align: right; flex-shrink: 0; }
+
+/* ── clipboard ── */
+.notepad-search { flex: 1; min-width: 0; }
+.notepad-list { display: flex; flex-direction: column; gap: var(--size-2-2); }
+.notepad-clip {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--size-2-2);
+  padding: var(--size-2-3) var(--size-4-2);
+  border-radius: var(--radius-m);
+  background-color: var(--background-secondary);
+  border-left: 3px solid transparent;
+}
+.notepad-clip.is-pinned { border-left-color: var(--np-accent); }
+.notepad-clip-main { flex: 1; min-width: 0; cursor: pointer; }
+.notepad-clip-text {
+  font-size: var(--font-ui-small);
+  white-space: pre-wrap;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.notepad-clip-meta { color: var(--text-faint); font-size: var(--font-ui-smaller); margin-top: var(--size-2-1); }
+.notepad-clip-actions { display: flex; flex-shrink: 0; opacity: 0; transition: opacity 0.1s; }
+.notepad-clip:hover .notepad-clip-actions, .notepad-clip.is-pinned .notepad-clip-actions { opacity: 1; }
+.notepad-clip-actions .notepad-icon-button { padding: var(--size-2-1); }
+.is-mobile .notepad-clip-actions { opacity: 1; }
+
+/* ── timebox ── */
+.notepad-stats { display: grid; grid-template-columns: 1fr 1fr; gap: var(--size-2-3); }
+.notepad-stat {
+  padding: var(--size-4-2);
+  border-radius: var(--radius-m);
+  background-color: var(--background-secondary);
+  text-align: center;
+}
+.notepad-stat-value { font-size: var(--font-ui-large); font-weight: var(--font-semibold); color: var(--np-accent); }
+.notepad-stat-label { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.notepad-session {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-3);
+  padding: var(--size-2-3) var(--size-4-2);
+  border-radius: var(--radius-m);
+  cursor: pointer;
+}
+.notepad-session:hover { background-color: var(--background-modifier-hover); }
+.notepad-session.is-running { background-color: var(--background-secondary); border-left: 3px solid var(--np-accent); }
+.notepad-session-info { flex: 1; min-width: 0; }
+.notepad-session-topic { font-size: var(--font-ui-small); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notepad-session-meta { color: var(--text-faint); font-size: var(--font-ui-smaller); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notepad-session-duration { color: var(--text-muted); font-size: var(--font-ui-small); font-variant-numeric: tabular-nums; }
+.notepad-timer { color: var(--np-accent); font-variant-numeric: tabular-nums; font-weight: var(--font-semibold); }
+.notepad-day {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--size-2-2);
+  padding: 0 var(--size-4-2);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+}
+.notepad-topic { display: flex; flex-direction: column; gap: var(--size-2-1); }
+.notepad-topic-label { display: flex; justify-content: space-between; gap: var(--size-2-2); font-size: var(--font-ui-small); }
+.notepad-topic-label span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notepad-topic-time { color: var(--text-muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.notepad-bar { height: 6px; border-radius: 3px; background-color: var(--background-modifier-border); overflow: hidden; }
+.notepad-bar-fill { height: 100%; width: var(--notepad-bar, 0%); background-color: var(--np-accent); border-radius: 3px; }

@@ -1,0 +1,27 @@
+{
+  "name": "notepad",
+  "version": "1.0.0",
+  "description": "Obsidian plugin: a tabbed sidebar with a scratch page, clipboard history and Timebox sessions.",
+  "main": "main.js",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "test": "node esbuild.config.mjs test && node .test-out/core.test.cjs",
+    "typecheck": "tsc -noEmit -skipLibCheck",
+    "version": "node version-bump.mjs && git add manifest.json versions.json"
+  },
+  "keywords": ["obsidian", "obsidian-plugin", "scratchpad", "clipboard", "timebox", "sidebar"],
+  "author": "Samed Yolcu",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "esbuild": "^0.28.2",
+    "obsidian": "^1.13.1",
+    "tslib": "^2.8.1",
+    "typescript": "^5.9.3"
+  },
+  "repository": { "type": "git", "url": "git+https://github.com/diyar4772/obsidian-notepad.git" },
+  "homepage": "https://github.com/diyar4772/obsidian-notepad#readme"
+}

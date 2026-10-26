@@ -1,0 +1,161 @@
+// Tests for src/core.ts. `npm test` bundles this file with esbuild and runs it in Node.
+
+import * as assert from "assert";
+import {
+  Clip,
+  formatDuration,
+  formatTimer,
+  noteBaseName,
+  overlapMs,
+  parseTime,
+  pushClip,
+  readTimeboxSessions,
+  startOfWeek,
+  totalsByTopic,
+  trimClips,
+} from "../src/core";
+
+const tests: { name: string; fn: () => void }[] = [];
+const test = (name: string, fn: () => void) => tests.push({ name, fn });
+const d = (y: number, mo: number, day: number, h = 0, mi = 0, s = 0) => new Date(y, mo - 1, day, h, mi, s);
+
+// ── clipboard ──
+
+test("pushClip adds to the top and ignores blank text", () => {
+  let h: Clip[] = [];
+  h = pushClip(h, "a", 1, 10);
+  h = pushClip(h, "b", 2, 10);
+  assert.deepStrictEqual(h.map((c) => c.text), ["b", "a"]);
+  assert.strictEqual(pushClip(h, "  \n", 3, 10), h);
+});
+
+test("pushClip moves duplicates to the top and keeps the pin", () => {
+  const h: Clip[] = [{ text: "b", at: 2 }, { text: "a", at: 1, pinned: true }];
+  const r = pushClip(h, "a", 3, 10);
+  assert.deepStrictEqual(r, [{ text: "a", at: 3, pinned: true }, { text: "b", at: 2 }]);
+});
+
+test("trimClips drops the oldest unpinned entries but never pinned ones", () => {
+  const h: Clip[] = [
+    { text: "4", at: 4 },
+    { text: "3", at: 3, pinned: true },
+    { text: "2", at: 2 },
+    { text: "1", at: 1, pinned: true },
+    { text: "0", at: 0 },
+  ];
+  assert.deepStrictEqual(trimClips(h, 2).map((c) => c.text), ["4", "3", "2", "1"]);
+  assert.deepStrictEqual(trimClips(h, 0).map((c) => c.text), ["3", "1"]);
+});
+
+// ── time ──
+
+test("formatDuration and formatTimer", () => {
+  assert.strictEqual(formatDuration(78 * 60_000 + 59_000), "1h 18m");
+  assert.strictEqual(formatDuration(25 * 60_000), "25m");
+  assert.strictEqual(formatDuration(-5), "0m");
+  assert.strictEqual(formatTimer(65_000), "01:05");
+  assert.strictEqual(formatTimer(3_725_000), "01:02:05");
+});
+
+test("parseTime accepts Timebox formats and rejects invalid dates", () => {
+  assert.deepStrictEqual(parseTime("2026-09-28 18:29:05")?.date, d(2026, 9, 28, 18, 29, 5));
+  assert.deepStrictEqual(parseTime("2026-09-28T18:29")?.date, d(2026, 9, 28, 18, 29));
+  assert.deepStrictEqual(parseTime("28.09.2026 18:29")?.date, d(2026, 9, 28, 18, 29));
+  assert.deepStrictEqual(parseTime("18:29", d(2026, 1, 2)), { date: d(2026, 1, 2, 18, 29), bare: true });
+  assert.strictEqual(parseTime("18:29"), null);
+  assert.strictEqual(parseTime("31.02.2026 10:00"), null);
+  assert.strictEqual(parseTime("2026-01-01 25:00"), null);
+});
+
+test("startOfWeek is Monday", () => {
+  assert.deepStrictEqual(startOfWeek(d(2026, 10, 26, 15)), d(2026, 10, 26)); // Monday
+  assert.deepStrictEqual(startOfWeek(d(2026, 11, 1, 9)), d(2026, 10, 26)); // Sunday
+});
+
+test("noteBaseName", () => {
+  assert.strictEqual(noteBaseName(d(2026, 10, 26, 9, 5)), "Notepad 2026-10-26 09.05");
+});
+
+// ── timebox blocks ──
+
+const NOTE = [
+  "# Day",
+  "```timebox",
+  "topic: Math Methods",
+  "start: 2026-09-28 18:29:05",
+  "mode: pomodoro",
+  "end: 2026-09-28 19:47:05",
+  "duration: 1h 18m",
+  "```",
+  "",
+  "````markdown",
+  "```timebox",
+  "topic: example only",
+  "start: 2026-09-28 10:00",
+  "```",
+  "````",
+  "> [!note]",
+  "> ~~~timebox",
+  "> topic: Quoted",
+  "> start: 23:30",
+  "> end: 00:15",
+  "> ~~~",
+  "```timebox",
+  "topic: Running",
+  "start: 2026-09-29 08:00:00",
+  "```",
+  "```timebox",
+  "topic: broken",
+  "```",
+].join("\n");
+
+test("readTimeboxSessions reads blocks, skips examples and broken blocks", () => {
+  const r = readTimeboxSessions(NOTE, d(2026, 9, 28));
+  assert.deepStrictEqual(
+    r.map((s) => [s.topic, s.mode, s.line]),
+    [
+      ["Math Methods", "pomodoro", 1],
+      ["Quoted", "simple", 16],
+      ["Running", "simple", 21],
+    ]
+  );
+  assert.deepStrictEqual(r[0].end, d(2026, 9, 28, 19, 47, 5));
+  assert.deepStrictEqual(r[1].start, d(2026, 9, 28, 23, 30));
+  assert.deepStrictEqual(r[1].end, d(2026, 9, 29, 0, 15)); // crossed midnight
+  assert.strictEqual(r[2].end, undefined);
+});
+
+test("readTimeboxSessions handles CRLF and an unclosed block", () => {
+  const r = readTimeboxSessions("```timebox\r\ntopic: A\r\nstart: 2026-01-01 10:00\r\nend: 2026-01-01 11:00\r\n```\r\n```timebox\r\nstart: 2026-01-01 12:00");
+  assert.strictEqual(r.length, 1);
+  assert.strictEqual(r[0].topic, "A");
+});
+
+test("overlapMs and totalsByTopic clip sessions to the range and count running ones up to now", () => {
+  const now = d(2026, 10, 26, 12);
+  const sessions = [
+    { topic: "A", start: d(2026, 10, 25, 23), end: d(2026, 10, 26, 1) }, // 1h inside today
+    { topic: "B", start: d(2026, 10, 26, 9), end: d(2026, 10, 26, 9, 30) },
+    { topic: "A", start: d(2026, 10, 26, 11, 30) }, // running: 30m
+  ];
+  const from = d(2026, 10, 26);
+  const to = d(2026, 10, 27);
+  assert.strictEqual(overlapMs(sessions[0], from, to, now), 3_600_000);
+  assert.strictEqual(overlapMs(sessions[2], from, to, now), 1_800_000);
+  assert.deepStrictEqual(totalsByTopic(sessions, from, to, now), [
+    { topic: "A", ms: 5_400_000 },
+    { topic: "B", ms: 1_800_000 },
+  ]);
+});
+
+let failed = 0;
+for (const t of tests) {
+  try {
+    t.fn();
+  } catch (e) {
+    failed++;
+    console.error(`✗ ${t.name}\n  ${(e as Error).message}`);
+  }
+}
+console.log(`${tests.length - failed}/${tests.length} tests passed`);
+if (failed) process.exit(1);
