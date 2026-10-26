@@ -47,7 +47,7 @@ Klipper itself leaves out copies that password managers mark as secret. Notepad 
 flatpak override --user --talk-name=org.kde.klipper md.obsidian.Obsidian
 ```
 
-The Clipboard tab shows this command when it's needed.
+Notepad can't do this for you: an app inside the Flatpak sandbox can't change its own permissions, so this one step is yours. The Clipboard tab shows the command when it's needed. To take the permission back later, run `flatpak override --user --no-talk-name=org.kde.klipper md.obsidian.Obsidian`.
 
 ### Linux without Klipper
 
