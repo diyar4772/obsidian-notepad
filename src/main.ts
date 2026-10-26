@@ -1,5 +1,5 @@
 import { debounce, Editor, MarkdownView, moment, normalizePath, Notice, Platform, Plugin, TFile, TFolder, WorkspaceLeaf } from "obsidian";
-import { Clip, fillDailyTemplate, isClip, isSecretCopy, noteBaseName, pushClip, trimClips } from "./core";
+import { Clip, fillDailyTemplate, isClip, isSecretCopy, noteBaseName, pushClip, SECRET_FORMATS, trimClips } from "./core";
 import { DEFAULT_SETTINGS, NotepadSettings, NotepadSettingTab, sanitizeSettings, TAB_IDS, TabId } from "./settings";
 import { TimeboxIndex } from "./timebox";
 import { NotepadView, VIEW_TYPE } from "./ui/view";
@@ -16,6 +16,7 @@ interface StoredData {
 interface ElectronClipboard {
   readText(): string;
   availableFormats(): string[];
+  has(format: string): boolean;
   writeText(text: string): void;
 }
 
@@ -207,6 +208,7 @@ export default class NotepadPlugin extends Plugin {
   // ───────────────────────── notes ─────────────────────────
 
   appendToScratch(text: string): void {
+    text = text.replace(/\r\n?/g, "\n"); // text copied on Windows; the text box only keeps "\n"
     const sep = this.scratch && !this.scratch.endsWith("\n") ? "\n" : "";
     this.setScratch(this.scratch + sep + text);
   }
@@ -339,14 +341,11 @@ export default class NotepadPlugin extends Plugin {
     } catch {
       return;
     }
-    if (text === this.lastClipboard) return;
+    // Empty: nothing to record, or (on Windows) another app has the clipboard open right now.
+    // Keeping the last text means that text isn't recorded again once the read works.
+    if (!text || text === this.lastClipboard) return;
     this.lastClipboard = text;
-    // Password managers mark copied passwords as secret; never store those.
-    try {
-      if (isSecretCopy(this.electronClipboard?.availableFormats() ?? [])) return;
-    } catch {
-      // Formats unavailable: record as usual.
-    }
+    if (this.electronClipboard && isSecretOnClipboard(this.electronClipboard)) return;
     this.recordClip(text);
   }
 
@@ -448,6 +447,27 @@ export default class NotepadPlugin extends Plugin {
     this.app.workspace.setActiveLeaf(view.leaf, { focus: true });
     return view;
   }
+}
+
+/**
+ * Password managers mark copied passwords as secret; such copies are never stored.
+ * On Linux the hint shows up in availableFormats(); on Windows and macOS that list only has
+ * common types (text, HTML, images), so each hint is also asked for by name.
+ */
+function isSecretOnClipboard(cb: ElectronClipboard): boolean {
+  try {
+    if (isSecretCopy(cb.availableFormats())) return true;
+  } catch {
+    // Formats unavailable: try the named check below.
+  }
+  for (const format of SECRET_FORMATS) {
+    try {
+      if (cb.has(format)) return true;
+    } catch {
+      // Unknown format name on this platform.
+    }
+  }
+  return false;
 }
 
 function errorText(e: unknown): string {

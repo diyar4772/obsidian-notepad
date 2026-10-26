@@ -11,7 +11,7 @@ const tests: { name: string; fn: () => Promise<void> }[] = [];
 const test = (name: string, fn: () => Promise<void>) => tests.push({ name, fn });
 
 // What src/main.ts touches outside the obsidian module.
-const clipboard = { text: "", formats: ["text/plain"] as string[] };
+const clipboard = { text: "", formats: ["text/plain"] as string[], named: [] as string[] };
 const g = globalThis as unknown as Record<string, unknown>;
 g.document = {};
 g.window = {
@@ -22,6 +22,7 @@ g.window = {
             readText: () => clipboard.text,
             writeText: (t: string) => (clipboard.text = t),
             availableFormats: () => clipboard.formats,
+            has: (f: string) => clipboard.named.includes(f),
           },
         }
       : undefined,
@@ -39,6 +40,7 @@ async function setup(opts: Setup = {}) {
   notices.length = 0;
   clipboard.text = "";
   clipboard.formats = ["text/plain"];
+  clipboard.named = [];
   const vault = new Vault();
   const app = {
     vault,
@@ -95,6 +97,20 @@ test("the system clipboard is recorded once per change; the text present at star
   assert.deepStrictEqual((stored().clips as { text: string }[]).map((c) => c.text), ["two", "one"]);
 });
 
+test("an empty or failed read in between doesn't record the same text again", async () => {
+  const { plugin, poll } = await setup();
+  clipboard.text = "A";
+  poll();
+  const at = plugin.clips[0].at;
+  clipboard.text = ""; // another app holds the clipboard, or it was cleared
+  poll();
+  clipboard.text = "A";
+  await new Promise((r) => setTimeout(r, 5));
+  poll();
+  assert.strictEqual(plugin.clips.length, 1);
+  assert.strictEqual(plugin.clips[0].at, at);
+});
+
 test("copies marked secret by a password manager are never recorded", async () => {
   const { plugin, poll } = await setup();
   clipboard.text = "hunter2";
@@ -102,6 +118,20 @@ test("copies marked secret by a password manager are never recorded", async () =
   poll();
   clipboard.text = "normal";
   clipboard.formats = ["text/plain"];
+  poll();
+  assert.deepStrictEqual(plugin.clips.map((c) => c.text), ["normal"]);
+});
+
+test("secret copies are also caught when the hint is only visible by name (Windows, macOS)", async () => {
+  const { plugin, poll } = await setup();
+  for (const hint of ["ExcludeClipboardContentFromMonitorProcessing", "org.nspasteboard.ConcealedType"]) {
+    clipboard.text = "secret " + hint;
+    clipboard.formats = ["text/plain"]; // what availableFormats() reports there
+    clipboard.named = [hint];
+    poll();
+  }
+  clipboard.named = [];
+  clipboard.text = "normal";
   poll();
   assert.deepStrictEqual(plugin.clips.map((c) => c.text), ["normal"]);
 });
@@ -252,6 +282,8 @@ test("the API appends to the scratch page", async () => {
   plugin.api.appendToScratch("one");
   plugin.api.appendToScratch("two");
   assert.strictEqual(plugin.api.getScratch(), "one\ntwo");
+  plugin.api.appendToScratch("windows\r\nlines\r");
+  assert.strictEqual(plugin.api.getScratch(), "one\ntwo\nwindows\nlines\n");
 });
 
 // ── timebox ──

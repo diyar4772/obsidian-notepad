@@ -18,10 +18,12 @@ export const MAX_CLIP_LENGTH = 100_000;
  * Clipboard formats password managers add to mark a copy as secret (KeePassXC, Bitwarden, 1Password…):
  * KDE/Linux, macOS (nspasteboard.org convention) and Windows.
  */
-const SECRET_FORMATS = ["x-kde-passwordmanagerhint", "org.nspasteboard.concealedtype", "excludeclipboardcontentfrommonitorprocessing"];
+export const SECRET_FORMATS = ["x-kde-passwordManagerHint", "org.nspasteboard.ConcealedType", "ExcludeClipboardContentFromMonitorProcessing"];
+
+const SECRET_LOWER = SECRET_FORMATS.map((f) => f.toLowerCase());
 
 export function isSecretCopy(formats: string[]): boolean {
-  return formats.some((f) => SECRET_FORMATS.includes(f.toLowerCase()));
+  return formats.some((f) => SECRET_LOWER.includes(f.toLowerCase()));
 }
 
 /**
