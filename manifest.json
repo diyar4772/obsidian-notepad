@@ -2,7 +2,7 @@
 	"id": "notepad",
 	"name": "Notepad",
 	"version": "1.0.0",
-	"minAppVersion": "1.4.0",
+	"minAppVersion": "1.7.2",
 	"description": "A tabbed sidebar with a scratch page, clipboard history and your Timebox sessions, with customizable colors.",
 	"author": "Samed Yolcu",
 	"authorUrl": "https://github.com/diyar4772",

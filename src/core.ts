@@ -9,13 +9,26 @@ export interface Clip {
   pinned?: boolean;
 }
 
+/** Longer copies aren't recorded, so data.json stays small and fast to save. */
+export const MAX_CLIP_LENGTH = 100_000;
+
+/**
+ * Clipboard formats password managers add to mark a copy as secret (KeePassXC, Bitwarden, 1Password…):
+ * KDE/Linux, macOS (nspasteboard.org convention) and Windows.
+ */
+const SECRET_FORMATS = ["x-kde-passwordmanagerhint", "org.nspasteboard.concealedtype", "excludeclipboardcontentfrommonitorprocessing"];
+
+export function isSecretCopy(formats: string[]): boolean {
+  return formats.some((f) => SECRET_FORMATS.includes(f.toLowerCase()));
+}
+
 /**
  * Adds `text` to the top of the history. A text that is already in the list moves to the top
- * (keeping its pin). Whitespace-only text is ignored. Unpinned entries beyond `max` are dropped,
+ * (keeping its pin). Whitespace-only text and text longer than MAX_CLIP_LENGTH are ignored. Unpinned entries beyond `max` are dropped,
  * oldest first; pinned entries are never dropped. Returns a new array.
  */
 export function pushClip(history: Clip[], text: string, at: number, max: number): Clip[] {
-  if (!text.trim()) return history;
+  if (!text.trim() || text.length > MAX_CLIP_LENGTH) return history;
   const existing = history.find((c) => c.text === text);
   const entry: Clip = { text, at, pinned: existing?.pinned || undefined };
   const rest = history.filter((c) => c.text !== text);

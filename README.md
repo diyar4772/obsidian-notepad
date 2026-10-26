@@ -42,9 +42,13 @@ Notepad finds sessions by reading the `timebox` blocks in your notes and updates
 - **Calendar / Daily notes**: "Add to today's daily note" uses the folder, date format and template from the Daily notes core plugin, so it lands in the same note Calendar opens.
 - **API for other plugins**: `app.plugins.plugins.notepad.api` provides `appendToScratch(text)`, `getScratch()` and `getClipboardHistory()`.
 
-## Privacy
+## Privacy and permissions
 
-Everything stays in the plugin's `data.json` inside your vault. Nothing is sent anywhere. The clipboard history can contain passwords you copied; turn recording off or clear the history if that matters to you.
+Notepad makes no network requests. Everything stays in the plugin's `data.json` inside your vault (`.obsidian/plugins/notepad/`).
+
+- **Clipboard:** on desktop Notepad reads the system clipboard to build the history, and writes to it when you copy an entry back. Copies that a password manager marks as secret (KeePassXC, Bitwarden, 1Password and others that use the standard hint on Linux, macOS or Windows) are not recorded. Copies longer than 100,000 characters are skipped. The history is stored as plain text, so if your vault is synced, it travels with it. Turn recording off or clear the history if that matters to you.
+- **Reading the vault:** to find Timebox sessions, the Timebox tab reads your notes once, the first time you open it, then only re-reads notes that change. Nothing is collected or written by this.
+- **Writing:** Notepad only creates or changes notes when you ask it to (save as note, add to daily note, insert into note).
 
 ## Development
 

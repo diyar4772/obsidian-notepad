@@ -1,5 +1,5 @@
 import { debounce, Editor, MarkdownView, moment, normalizePath, Notice, Platform, Plugin, TFile, WorkspaceLeaf } from "obsidian";
-import { Clip, isClip, noteBaseName, pushClip, trimClips } from "./core";
+import { Clip, isClip, isSecretCopy, noteBaseName, pushClip, trimClips } from "./core";
 import { DEFAULT_SETTINGS, NotepadSettings, NotepadSettingTab, sanitizeSettings, TAB_IDS, TabId } from "./settings";
 import { TimeboxIndex } from "./timebox";
 import { NotepadView, VIEW_TYPE } from "./ui/view";
@@ -15,6 +15,7 @@ interface StoredData {
 
 interface ElectronClipboard {
   readText(): string;
+  availableFormats(): string[];
   writeText(text: string): void;
 }
 
@@ -247,7 +248,9 @@ export default class NotepadPlugin extends Plugin {
       return;
     }
     const folder = (opts.folder ?? "").trim().replace(/^\/+|\/+$/g, "");
-    const name = moment().format(opts.format?.trim() || "YYYY-MM-DD");
+    // obsidian's `moment` export is typed loosely; this is the only call we need.
+    const now = (moment as unknown as () => { format(f: string): string })();
+    const name = now.format(opts.format?.trim() || "YYYY-MM-DD");
     const path = normalizePath(`${folder ? folder + "/" : ""}${name}.md`);
 
     let file = this.app.vault.getAbstractFileByPath(path);
@@ -299,6 +302,12 @@ export default class NotepadPlugin extends Plugin {
     }
     if (text === this.lastClipboard) return;
     this.lastClipboard = text;
+    // Password managers mark copied passwords as secret; never store those.
+    try {
+      if (isSecretCopy(this.electronClipboard?.availableFormats() ?? [])) return;
+    } catch {
+      // Formats unavailable: record as usual.
+    }
     this.recordClip(text);
   }
 

@@ -1,4 +1,5 @@
 import { App, Platform, PluginSettingTab, Setting } from "obsidian";
+import type { SettingDefinitionItem } from "obsidian";
 import type NotepadPlugin from "./main";
 
 export const TAB_IDS = ["notes", "clipboard", "timebox"] as const;
@@ -54,7 +55,7 @@ export function sanitizeSettings(raw: unknown): NotepadSettings {
   const d = DEFAULT_SETTINGS;
   const rawTabs = (r.tabs && typeof r.tabs === "object" ? r.tabs : {}) as Record<string, unknown>;
   const tabs = { ...d.tabs };
-  for (const id of TAB_IDS) if (typeof rawTabs[id] === "boolean") tabs[id] = rawTabs[id] as boolean;
+  for (const id of TAB_IDS) if (typeof rawTabs[id] === "boolean") tabs[id] = rawTabs[id];
   return {
     tabs,
     saveFolder: typeof r.saveFolder === "string" ? r.saveFolder : d.saveFolder,
@@ -73,10 +74,110 @@ export function sanitizeSettings(raw: unknown): NotepadSettings {
 
 type ColorKey = "accentColor" | "backgroundColor" | "textColor";
 
+const SAVE_FOLDER_DESC = "Folder for notes saved from the scratch page. Leave empty for the vault root.";
+const CLIPBOARD_DESC = Platform.isDesktopApp
+  ? "Remember text copied anywhere on the computer while Obsidian is running."
+  : "On mobile only copies made inside Obsidian are recorded.";
+
 export class NotepadSettingTab extends PluginSettingTab {
   constructor(app: App, private plugin: NotepadPlugin) {
     super(app, plugin);
   }
+
+  // ───────────── Obsidian 1.13+: declarative settings (also indexed by the settings search) ─────────────
+  // Obsidian calls getSettingDefinitions() and skips display(); older versions only call display().
+  // Keep both in sync when adding or changing a setting.
+
+  getSettingDefinitions(): SettingDefinitionItem[] {
+    const d = DEFAULT_SETTINGS;
+    const number = (key: "clipboardMax" | "clipboardInterval" | "timeboxDays", min: number, max: number) => ({
+      type: "number" as const,
+      key,
+      min,
+      max,
+      step: 1,
+      defaultValue: d[key],
+      validate: (v: number) => (Number.isInteger(v) && v >= min && v <= max ? undefined : `Enter a whole number from ${min} to ${max}.`),
+    });
+    return [
+      {
+        type: "group",
+        heading: "Tabs",
+        items: TAB_IDS.map((id) => ({
+          name: `Show ${TAB_LABELS[id].toLowerCase()} tab`,
+          control: { type: "toggle" as const, key: `tabs.${id}`, defaultValue: true },
+        })),
+      },
+      {
+        type: "group",
+        heading: "Notes",
+        items: [
+          { name: "Save folder", desc: SAVE_FOLDER_DESC, control: { type: "folder", key: "saveFolder", includeRoot: true } },
+          { name: "Open the note after saving", control: { type: "toggle", key: "openSavedNote", defaultValue: d.openSavedNote } },
+          {
+            name: "Clear after saving",
+            desc: "Empty the scratch page after it is saved as a note or added to the daily note.",
+            control: { type: "toggle", key: "clearAfterSave", defaultValue: d.clearAfterSave },
+          },
+          { name: "Font size", control: { type: "slider", key: "fontSize", min: 10, max: 28, step: 1, defaultValue: d.fontSize } },
+        ],
+      },
+      {
+        type: "group",
+        heading: "Clipboard",
+        items: [
+          { name: "Record clipboard history", desc: CLIPBOARD_DESC, control: { type: "toggle", key: "clipboardWatch", defaultValue: d.clipboardWatch } },
+          { name: "History size", desc: "Pinned entries don't count toward the limit.", control: number("clipboardMax", 5, 1000) },
+          { name: "Check interval (ms)", desc: "How often the system clipboard is checked.", control: number("clipboardInterval", 300, 10_000) },
+        ],
+      },
+      {
+        type: "group",
+        heading: "Timebox",
+        items: [{ name: "Days of history", desc: "How many days of finished sessions to list.", control: number("timeboxDays", 1, 90) }],
+      },
+      {
+        type: "group",
+        heading: "Colors",
+        extraButtons: [
+          (b) =>
+            b
+              .setIcon("rotate-ccw")
+              .setTooltip("Follow the theme")
+              .onClick(async () => {
+                const st = this.plugin.settings;
+                st.accentColor = st.backgroundColor = st.textColor = "";
+                await this.plugin.saveSettings();
+                (this as { update?: () => void }).update?.();
+              }),
+        ],
+        items: [
+          { name: "Accent color", desc: "Tabs, buttons and progress bars.", control: { type: "color", key: "accentColor" } },
+          { name: "Background color", control: { type: "color", key: "backgroundColor" } },
+          { name: "Text color", control: { type: "color", key: "textColor" } },
+        ],
+      },
+    ];
+  }
+
+  getControlValue(key: string): unknown {
+    const settings = this.plugin.settings;
+    if (key.startsWith("tabs.")) return settings.tabs[key.slice(5) as TabId];
+    const v = (settings as unknown as Record<string, unknown>)[key];
+    return v === "" ? undefined : v; // empty color = follow the theme
+  }
+
+  /** Saves through the plugin so data.json keeps the scratch page and clipboard history. */
+  async setControlValue(key: string, value: unknown): Promise<void> {
+    const settings = this.plugin.settings;
+    const next = key.startsWith("tabs.")
+      ? { ...settings, tabs: { ...settings.tabs, [key.slice(5)]: value } }
+      : { ...settings, [key]: key === "saveFolder" && typeof value === "string" ? value.trim().replace(/^\/+|\/+$/g, "") : value };
+    this.plugin.settings = sanitizeSettings(next);
+    await this.plugin.saveSettings();
+  }
+
+  // ───────────── Obsidian < 1.13: imperative settings ─────────────
 
   display(): void {
     const { containerEl } = this;
@@ -96,7 +197,7 @@ export class NotepadSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("Notes").setHeading();
     new Setting(containerEl)
       .setName("Save folder")
-      .setDesc("Where \"Save as note\" creates notes. Leave empty for the vault root.")
+      .setDesc(SAVE_FOLDER_DESC)
       .addText((t) =>
         t.setPlaceholder("Inbox").setValue(s.saveFolder).onChange(async (v) => {
           s.saveFolder = v.trim().replace(/^\/+|\/+$/g, "");
@@ -122,7 +223,6 @@ export class NotepadSettingTab extends PluginSettingTab {
       sl
         .setLimits(10, 28, 1)
         .setValue(s.fontSize)
-        .setDynamicTooltip()
         .onChange(async (v) => {
           s.fontSize = v;
           await this.plugin.saveSettings();
@@ -132,11 +232,7 @@ export class NotepadSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("Clipboard").setHeading();
     new Setting(containerEl)
       .setName("Record clipboard history")
-      .setDesc(
-        Platform.isDesktopApp
-          ? "Remember text copied anywhere on the computer while Obsidian is running."
-          : "On mobile only copies made inside Obsidian are recorded."
-      )
+      .setDesc(CLIPBOARD_DESC)
       .addToggle((t) =>
         t.setValue(s.clipboardWatch).onChange(async (v) => {
           s.clipboardWatch = v;

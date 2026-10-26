@@ -246,9 +246,8 @@ export class NotepadView extends ItemView {
         info.addEventListener("click", () => void this.openNote(a.path));
         const t = row.createDiv({ cls: "notepad-timer" });
         if (start) timers.push({ el: t, start: start.getTime() });
-        iconButton(row, "square", "Finish", async () => {
-          await timebox.stopSession({ path: a.path, start: a.start });
-          drawActive();
+        iconButton(row, "square", "Finish", () => {
+          void timebox.stopSession({ path: a.path, start: a.start }).then(drawActive);
         });
       }
       tick();

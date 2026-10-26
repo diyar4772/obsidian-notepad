@@ -25,8 +25,16 @@ User docs are in `README.md`. Sibling project: Timebox (`../../Timebox/timebox`)
 - Clearing uses a two-click button, never a blocking `confirm()`.
 - The view is placed under the Calendar leaf only once (`placed`); afterwards Obsidian's layout restores it.
 
+- Settings have two paths, as in Timebox 1.0.1: `getSettingDefinitions()` (1.13+, also used by settings search) and `display()` (older versions). **Keep both in sync.** `getControlValue`/`setControlValue` map `tabs.<id>` keys and save through `plugin.saveSettings()` (the default would overwrite data.json with only the settings and lose the scratch page and clipboard history).
+- Clipboard copies marked secret by password managers (`isSecretCopy`) and copies over `MAX_CLIP_LENGTH` are never stored.
+- `minAppVersion` is 1.7.2 (awaited `revealLeaf`). Check new APIs against it with Obsidian's lint rules: see "Linting with Obsidian's review rules" in Timebox's CLAUDE.md. Only the intentional `display` deprecation warning should remain.
+
 ## Possible improvements
 
-- Declarative settings (`getSettingDefinitions`) for Obsidian 1.13 settings search, as in Timebox 1.0.1.
 - Image entries in the clipboard history; importing KDE Klipper history.
 - Multiple scratch pages.
+
+## Changelog
+
+- **1.0.0 (2026-10-26):** First release.
+- **1.0.1:** Addressed the community directory's automated review: `minAppVersion` 1.7.2, declarative settings, no unsafe `moment` call, no promise-returning click handler, sentence case, no deprecated `setDynamicTooltip`. Security pass: secret copies from password managers and very long copies are not recorded; linear-time guard tests for the block reader. Releases get generated notes.

@@ -5,6 +5,8 @@ import {
   Clip,
   formatDuration,
   formatTimer,
+  isSecretCopy,
+  MAX_CLIP_LENGTH,
   noteBaseName,
   overlapMs,
   parseTime,
@@ -45,6 +47,18 @@ test("trimClips drops the oldest unpinned entries but never pinned ones", () => 
   ];
   assert.deepStrictEqual(trimClips(h, 2).map((c) => c.text), ["4", "3", "2", "1"]);
   assert.deepStrictEqual(trimClips(h, 0).map((c) => c.text), ["3", "1"]);
+});
+
+test("pushClip skips very long text", () => {
+  assert.strictEqual(pushClip([], "x".repeat(MAX_CLIP_LENGTH + 1), 1, 10).length, 0);
+  assert.strictEqual(pushClip([], "x".repeat(MAX_CLIP_LENGTH), 1, 10).length, 1);
+});
+
+test("isSecretCopy recognizes password manager hints", () => {
+  assert.ok(isSecretCopy(["text/plain", "x-kde-passwordManagerHint"]));
+  assert.ok(isSecretCopy(["org.nspasteboard.ConcealedType"]));
+  assert.ok(isSecretCopy(["ExcludeClipboardContentFromMonitorProcessing"]));
+  assert.ok(!isSecretCopy(["text/plain", "text/html"]));
 });
 
 // ── time ──
@@ -146,6 +160,16 @@ test("overlapMs and totalsByTopic clip sessions to the range and count running o
     { topic: "A", ms: 5_400_000 },
     { topic: "B", ms: 1_800_000 },
   ]);
+});
+
+test("performance: pathological lines are read in linear time", () => {
+  const t0 = Date.now();
+  const lines = [" ".repeat(200_000), ">".repeat(200_000), "`".repeat(200_000), "> ".repeat(100_000) + "```timebox", "start:" + " ".repeat(200_000)];
+  for (const l of lines) readTimeboxSessions(l + "\n" + l, d(2026, 1, 1));
+  const many = Array.from({ length: 2000 }, (_, i) => `\`\`\`timebox\ntopic: ${i}\nstart: 2026-01-01 10:00\nend: 11:00\n\`\`\``).join("\n");
+  assert.strictEqual(readTimeboxSessions(many).length, 2000);
+  const ms = Date.now() - t0;
+  assert.ok(ms < 1000, `took ${ms} ms`);
 });
 
 let failed = 0;
