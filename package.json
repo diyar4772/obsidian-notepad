@@ -1,6 +1,6 @@
 {
   "name": "notepad",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Obsidian plugin: a tabbed sidebar with a scratch page, clipboard history and Timebox sessions.",
   "main": "main.js",
   "private": true,
