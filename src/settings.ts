@@ -19,6 +19,8 @@ export interface NotepadSettings {
   clearAfterSave: boolean;
   fontSize: number;
   clipboardWatch: boolean;
+  /** Read the KDE clipboard history (Klipper) when it's reachable. Desktop Linux only. */
+  klipper: boolean;
   clipboardInterval: number; // ms
   clipboardMax: number;
   timeboxDays: number;
@@ -35,6 +37,7 @@ export const DEFAULT_SETTINGS: NotepadSettings = {
   clearAfterSave: false,
   fontSize: 14,
   clipboardWatch: true,
+  klipper: true,
   clipboardInterval: 1000,
   clipboardMax: 100,
   timeboxDays: 7,
@@ -63,6 +66,7 @@ export function sanitizeSettings(raw: unknown): NotepadSettings {
     clearAfterSave: typeof r.clearAfterSave === "boolean" ? r.clearAfterSave : d.clearAfterSave,
     fontSize: num(r.fontSize, 10, 28, d.fontSize),
     clipboardWatch: typeof r.clipboardWatch === "boolean" ? r.clipboardWatch : d.clipboardWatch,
+    klipper: typeof r.klipper === "boolean" ? r.klipper : d.klipper,
     clipboardInterval: num(r.clipboardInterval, 300, 10_000, d.clipboardInterval),
     clipboardMax: num(r.clipboardMax, 5, 1000, d.clipboardMax),
     timeboxDays: num(r.timeboxDays, 1, 90, d.timeboxDays),
@@ -124,6 +128,15 @@ export class NotepadSettingTab extends PluginSettingTab {
         heading: "Clipboard",
         items: [
           { name: "Record clipboard history", desc: CLIPBOARD_DESC, control: { type: "toggle", key: "clipboardWatch", defaultValue: d.clipboardWatch } },
+          {
+            name: "Use the KDE clipboard history",
+            desc:
+              "On KDE Plasma, take copies from Klipper, the clipboard in the system tray. It sees every copy, also while " +
+              "Obsidian is in the background, and keeps copies made while Obsidian was closed. Falls back to the system clipboard when Klipper isn't reachable.",
+            aliases: ["Klipper"],
+            visible: Platform.isDesktopApp && Platform.isLinux,
+            control: { type: "toggle", key: "klipper", defaultValue: d.klipper },
+          },
           { name: "History size", desc: "Pinned entries don't count toward the limit.", control: number("clipboardMax", 5, 1000) },
           { name: "Check interval (ms)", desc: "How often the system clipboard is checked.", control: number("clipboardInterval", 300, 10_000) },
         ],

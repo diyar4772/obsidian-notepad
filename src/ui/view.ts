@@ -3,6 +3,7 @@ import { dayKey, formatClock, formatDuration, formatTimer, overlapMs, startOfDay
 import { parseStamp } from "../timebox-core";
 import type NotepadPlugin from "../main";
 import { TAB_IDS, TAB_LABELS, TabId } from "../settings";
+import { FLATPAK_PERMISSION_COMMAND, isFlatpak, isWaylandSession } from "../klipper";
 import { getTimebox, IndexedSession } from "../timebox";
 
 export const VIEW_TYPE = "notepad-view";
@@ -94,6 +95,10 @@ export class NotepadView extends ItemView {
     if (this.shown === "clipboard") this.renderClipList();
   }
 
+  onClipboardSourceChanged(): void {
+    if (this.shown === "clipboard") this.show("clipboard");
+  }
+
   /** Shows the current scratch text (changed elsewhere: another view, a command, the API). */
   syncScratch(): void {
     if (!this.textarea) return;
@@ -175,14 +180,30 @@ export class NotepadView extends ItemView {
     });
     confirmButton(bar, "trash-2", "Clear history (pinned entries stay)", () => this.plugin.clearClips());
 
-    const s = this.plugin.settings;
-    if (!s.clipboardWatch) {
-      this.body.createDiv({ cls: "notepad-hint", text: "Recording is off. Turn it on in the settings." });
-    } else if (!this.plugin.systemClipboardAvailable) {
-      this.body.createDiv({ cls: "notepad-hint", text: "Only copies made inside Obsidian are recorded on this device." });
-    }
+    this.renderSourceHint();
     this.clipList = this.body.createDiv({ cls: "notepad-list" });
     this.renderClipList();
+  }
+
+  /** Says where copies come from, and on Wayland how to see copies made in other apps. */
+  private renderSourceHint(): void {
+    const source = this.plugin.clipboardSource;
+    if (source === "off") {
+      this.body.createDiv({ cls: "notepad-hint", text: "Recording is off. Turn it on in the settings." });
+    } else if (source === "klipper") {
+      this.body.createDiv({ cls: "notepad-hint", text: "Copies come from the KDE clipboard history (Klipper)." });
+    } else if (source === "obsidian") {
+      this.body.createDiv({ cls: "notepad-hint", text: "Only copies made inside Obsidian are recorded on this device." });
+    } else if (this.plugin.klipperSupported && this.plugin.settings.klipper && isWaylandSession()) {
+      const hint = this.body.createDiv({ cls: "notepad-hint" });
+      hint.createDiv({ text: "Copies made in other apps are only seen when you switch back to Obsidian." });
+      if (isFlatpak()) {
+        hint.createDiv({ text: "On KDE Plasma, let Obsidian read the Klipper clipboard history by running this once in a terminal, then restart Obsidian:" });
+        hint.createEl("code", { cls: "notepad-command", text: FLATPAK_PERMISSION_COMMAND });
+      } else {
+        hint.createDiv({ text: "On KDE Plasma, Notepad uses the Klipper clipboard history when Klipper is running." });
+      }
+    }
   }
 
   private renderClipList(): void {
@@ -202,7 +223,8 @@ export class NotepadView extends ItemView {
       row.toggleClass("is-pinned", !!clip.pinned);
       const main = row.createDiv({ cls: "notepad-clip-main", attr: { "aria-label": "Click to copy" } });
       main.createDiv({ cls: "notepad-clip-text", text: clip.text });
-      main.createDiv({ cls: "notepad-clip-meta", text: relativeTime(clip.at) + (clip.text.length > 200 ? ` · ${clip.text.length} characters` : "") });
+      const when = clip.imported ? "From the KDE clipboard history" : relativeTime(clip.at);
+      main.createDiv({ cls: "notepad-clip-meta", text: when + (clip.text.length > 200 ? ` · ${clip.text.length} characters` : "") });
       main.addEventListener("click", () => void this.plugin.copyClip(clip.text));
       const actions = row.createDiv({ cls: "notepad-clip-actions" });
       iconButton(actions, "text-cursor-input", "Insert into note", () => void this.plugin.insertIntoNote(clip.text));
@@ -278,7 +300,7 @@ export class NotepadView extends ItemView {
         info.createDiv({ cls: "notepad-session-meta", text: basename(a.path) + (a.mode === "pomodoro" ? " · pomodoro" : "") });
         info.addEventListener("click", () => void this.openNote(a.path));
         timers.push({ el: row.createDiv({ cls: "notepad-timer" }), start: a.start.getTime() });
-        const finish = iconButton(row, "square", "Finish", () => {
+        const finish = iconButton(row, "circle-stop", "Finish", () => {
           finish.setAttr("disabled", "true");
           void timebox.stopSession({ path: a.path, start: a.startStamp }).then(drawActive);
         });

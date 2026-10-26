@@ -9,6 +9,8 @@ export interface Clip {
   /** Unix ms of the last time this text was copied. */
   at: number;
   pinned?: boolean;
+  /** Came from the KDE clipboard history without a known copy time (copied while Obsidian was closed). */
+  imported?: boolean;
 }
 
 /** Longer copies aren't recorded, so data.json stays small and fast to save. */
@@ -31,10 +33,12 @@ export function isSecretCopy(formats: string[]): boolean {
  * (keeping its pin). Whitespace-only text and text longer than MAX_CLIP_LENGTH are ignored. Unpinned entries beyond `max` are dropped,
  * oldest first; pinned entries are never dropped. Returns a new array.
  */
-export function pushClip(history: Clip[], text: string, at: number, max: number): Clip[] {
+export function pushClip(history: Clip[], text: string, at: number, max: number, imported = false): Clip[] {
   if (!text.trim() || text.length > MAX_CLIP_LENGTH) return history;
   const existing = history.find((c) => c.text === text);
-  const entry: Clip = { text, at, pinned: existing?.pinned || undefined };
+  const entry: Clip = { text, at };
+  if (existing?.pinned) entry.pinned = true;
+  if (imported) entry.imported = true;
   const rest = history.filter((c) => c.text !== text);
   return trimClips([entry, ...rest], max);
 }
@@ -48,6 +52,114 @@ export function isClip(v: unknown): v is Clip {
   if (!v || typeof v !== "object") return false;
   const c = v as Record<string, unknown>;
   return typeof c.text === "string" && typeof c.at === "number" && Number.isFinite(c.at);
+}
+
+// ───────────────────────── KDE clipboard history (Klipper) ─────────────────────────
+
+const GVARIANT_ESCAPES: Record<string, string> = { a: "\x07", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v" };
+
+/**
+ * Parses what `gdbus call` prints for a string array reply: `(['a', "it's", 'tab\t'],)`, or
+ * `(@as [],)` when empty. Strings use GVariant text format (single or double quotes, C-style and
+ * \uXXXX / \UXXXXXXXX escapes). Returns null for anything else.
+ */
+export function parseGVariantStrings(out: string): string[] | null {
+  const text = out.trim();
+  const head = /^\(\s*(?:@as\s*)?\[/.exec(text);
+  if (!head) return null;
+  const items: string[] = [];
+  let i = head[0].length;
+  for (;;) {
+    while (i < text.length && (text[i] === " " || text[i] === ",")) i++;
+    if (text[i] === "]") break;
+    const quote = text[i];
+    if (quote !== "'" && quote !== '"') return null;
+    i++;
+    let value = "";
+    for (;;) {
+      if (i >= text.length) return null;
+      const ch = text[i++];
+      if (ch === quote) break;
+      if (ch !== "\\") {
+        value += ch;
+        continue;
+      }
+      const e = text[i++];
+      if (e === "u" || e === "U") {
+        const len = e === "u" ? 4 : 8;
+        const hex = text.slice(i, i + len);
+        if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length !== len) return null;
+        value += String.fromCodePoint(parseInt(hex, 16));
+        i += len;
+      } else {
+        value += GVARIANT_ESCAPES[e] ?? e; // \\, \', \" and anything unknown stand for themselves
+      }
+    }
+    items.push(value);
+  }
+  return /^\]\s*,?\s*\)$/.test(text.slice(i)) ? items : null;
+}
+
+/** Klipper lists images as text like "▨ 1920x1080 32bpp"; those aren't text the user copied. */
+export function isKlipperImage(text: string): boolean {
+  return /^▨ \d+\s*[x×]\s*\d+/.test(text);
+}
+
+/** A short fingerprint of a text, so data.json can remember Klipper's newest entry without storing it again. */
+export function clipHash(text: string): string {
+  let h = 0x811c9dc5; // FNV-1a, 32 bit
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return `${text.length}:${(h >>> 0).toString(16)}`;
+}
+
+/**
+ * The entries at the top of Klipper's history (newest first) that weren't there in the previous
+ * read, oldest first. A text copied again moves to the top in Klipper, so it counts as new.
+ */
+export function newKlipperItems(prev: string[], next: string[]): string[] {
+  if (next.length === 0 || next[0] === prev[0]) return [];
+  const top: string[] = [];
+  for (const item of next) {
+    if (item === prev[0]) break;
+    top.push(item);
+  }
+  if (prev.length > 0 && top.length === next.length) {
+    // The previous newest entry is gone (removed in Klipper, or the history was cleared):
+    // take the current top (it's on the clipboard now) and entries never seen before.
+    const known = new Set(prev);
+    return next.filter((item, i) => i === 0 || !known.has(item)).reverse();
+  }
+  return top.reverse();
+}
+
+/** Adds texts (oldest first) to the top of the history, skipping Klipper's image entries. */
+export function addClips(history: Clip[], texts: string[], at: number, max: number, imported: boolean): Clip[] {
+  let next = history;
+  texts.forEach((text, i) => {
+    if (!isKlipperImage(text)) next = pushClip(next, text, at + i, max, imported);
+  });
+  return next;
+}
+
+/**
+ * The first time Notepad reads Klipper: Klipper saw every copy, so its order wins. Entries Notepad
+ * already has keep their time and pin; the others are marked imported (copy time unknown).
+ * Notepad's entries that Klipper doesn't have (older, or removed there) follow.
+ */
+export function mergeKlipperHistory(history: Clip[], klipper: string[], at: number, max: number): Clip[] {
+  const byText = new Map(history.map((c) => [c.text, c]));
+  const seen = new Set<string>();
+  const merged: Clip[] = [];
+  for (const text of klipper) {
+    if (seen.has(text) || !text.trim() || text.length > MAX_CLIP_LENGTH || isKlipperImage(text)) continue;
+    seen.add(text);
+    merged.push(byText.get(text) ?? { text, at, imported: true });
+  }
+  for (const c of history) if (!seen.has(c.text)) merged.push(c);
+  return trimClips(merged, max);
 }
 
 // ───────────────────────── time ─────────────────────────

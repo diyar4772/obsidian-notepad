@@ -2,8 +2,14 @@
 
 import * as assert from "assert";
 import {
+  addClips,
   Clip,
+  clipHash,
   fillDailyTemplate,
+  isKlipperImage,
+  mergeKlipperHistory,
+  newKlipperItems,
+  parseGVariantStrings,
   formatDuration,
   formatTimer,
   isSecretCopy,
@@ -59,6 +65,74 @@ test("isSecretCopy recognizes password manager hints", () => {
   assert.ok(isSecretCopy(["org.nspasteboard.ConcealedType"]));
   assert.ok(isSecretCopy(["ExcludeClipboardContentFromMonitorProcessing"]));
   assert.ok(!isSecretCopy(["text/plain", "text/html"]));
+});
+
+// ── KDE clipboard history ──
+
+test("parseGVariantStrings reads what gdbus prints, including quotes and escapes", () => {
+  // Printed by GLib itself: GLib.Variant('(as)', (items,)).print_(True)
+  const out = String.raw`(['plain', "it's", 'say "hi"', "both ' and \"", 'line1\nline2\ttab', 'back\\slash', 'emoji 😀 ğüşİ', 'ctrl \a\u001b end', ''],)`;
+  assert.deepStrictEqual(parseGVariantStrings(out + "\n"), [
+    "plain",
+    "it's",
+    'say "hi"',
+    `both ' and "`,
+    "line1\nline2\ttab",
+    "back\\slash",
+    "emoji 😀 ğüşİ",
+    "ctrl \x07\x1b end",
+    "",
+  ]);
+  assert.deepStrictEqual(parseGVariantStrings("(@as [],)"), []);
+  assert.deepStrictEqual(parseGVariantStrings(String.raw`(['\U0001F600'],)`), ["😀"]);
+});
+
+test("parseGVariantStrings rejects anything else", () => {
+  for (const bad of ["", "Error: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown", "('a',)", "(['a',)", "(['a'],) trailing", String.raw`(['\u12'],)`, "(['unterminated],)"]) {
+    assert.strictEqual(parseGVariantStrings(bad), null, bad);
+  }
+});
+
+test("isKlipperImage and clipHash", () => {
+  assert.ok(isKlipperImage("▨ 1920x1080 32bpp"));
+  assert.ok(!isKlipperImage("▨ not an image"));
+  assert.strictEqual(clipHash("abc"), clipHash("abc"));
+  assert.notStrictEqual(clipHash("abc"), clipHash("abd"));
+  assert.notStrictEqual(clipHash("ab"), clipHash("abc"));
+});
+
+test("newKlipperItems finds what was copied since the last read, oldest first", () => {
+  assert.deepStrictEqual(newKlipperItems([], ["b", "a"]), ["a", "b"]);
+  assert.deepStrictEqual(newKlipperItems(["a", "b"], ["a", "b"]), []);
+  assert.deepStrictEqual(newKlipperItems(["a", "b"], ["c", "a", "b"]), ["c"]);
+  assert.deepStrictEqual(newKlipperItems(["a", "b"], ["d", "c", "a", "b"]), ["c", "d"]);
+  assert.deepStrictEqual(newKlipperItems(["a", "b"], ["b", "a"]), ["b"]); // b copied again
+  assert.deepStrictEqual(newKlipperItems(["a", "b"], []), []); // history cleared
+  assert.deepStrictEqual(newKlipperItems(["a", "b", "c"], ["b", "c"]), ["b"]); // newest removed in Klipper
+  assert.deepStrictEqual(newKlipperItems(["a", "b"], ["x"]), ["x"]); // cleared, then a new copy
+});
+
+test("mergeKlipperHistory: Klipper's order wins, known entries keep time and pin, images are skipped", () => {
+  const history: Clip[] = [
+    { text: "X", at: 5, pinned: true },
+    { text: "Y", at: 4 },
+  ];
+  const r = mergeKlipperHistory(history, ["K1", "X", "▨ 10x10 32bpp", "K2", "K1"], 99, 10);
+  assert.deepStrictEqual(r, [
+    { text: "K1", at: 99, imported: true },
+    { text: "X", at: 5, pinned: true },
+    { text: "K2", at: 99, imported: true },
+    { text: "Y", at: 4 },
+  ]);
+});
+
+test("addClips adds oldest first with increasing times", () => {
+  const r = addClips([{ text: "old", at: 1 }], ["first", "▨ 5x5 8bpp", "second"], 100, 10, true);
+  assert.deepStrictEqual(r, [
+    { text: "second", at: 102, imported: true },
+    { text: "first", at: 100, imported: true },
+    { text: "old", at: 1 },
+  ]);
 });
 
 // ── time ──

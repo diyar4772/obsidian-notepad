@@ -4,6 +4,7 @@
 import * as assert from "assert";
 import { clock, notices, TFile, Vault } from "./obsidian-mock";
 import NotepadPlugin from "../src/main";
+import { clipHash } from "../src/core";
 import { DEFAULT_SETTINGS, NotepadSettingTab, TAB_IDS } from "../src/settings";
 import { getTimebox, TimeboxIndex } from "../src/timebox";
 
@@ -12,6 +13,42 @@ const test = (name: string, fn: () => Promise<void>) => tests.push({ name, fn })
 
 // What src/main.ts touches outside the obsidian module.
 const clipboard = { text: "", formats: ["text/plain"] as string[], named: [] as string[] };
+
+/** A fake `gdbus`: `call` returns `history` (or fails while `reachable` is false), `monitor` gives a controllable process. */
+class FakeMonitor {
+  killed = false;
+  private onData: (chunk: unknown) => void = () => {};
+  private handlers: Record<string, () => void> = {};
+  stdout = { on: (_event: string, fn: (chunk: unknown) => void) => (this.onData = fn) };
+  on(event: string, fn: () => void): void {
+    this.handlers[event] = fn;
+  }
+  kill(): void {
+    this.killed = true;
+  }
+  signal(): void {
+    this.onData("/klipper: org.kde.klipper.klipper.clipboardHistoryUpdated ()\n");
+  }
+  exit(): void {
+    this.handlers.exit?.();
+  }
+}
+const klipper = { reachable: false, history: [] as string[], monitors: [] as FakeMonitor[] };
+const gvariant = (items: string[]) =>
+  items.length ? `([${items.map((t) => "'" + t.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, "\\n") + "'").join(", ")}],)\n` : "(@as [],)\n";
+const childProcess = {
+  execFile: (_file: string, _args: string[], _opts: unknown, cb: (e: Error | null, out: string) => void) => {
+    void Promise.resolve().then(() => (klipper.reachable ? cb(null, gvariant(klipper.history)) : cb(new Error("ServiceUnknown"), "")));
+  },
+  spawn: () => {
+    const m = new FakeMonitor();
+    klipper.monitors.push(m);
+    return m;
+  },
+};
+/** Timers the plugin set with window.setTimeout; tests fire them by hand. */
+const timeouts: (() => void)[] = [];
+const flush = () => new Promise((r) => setTimeout(r, 0));
 const g = globalThis as unknown as Record<string, unknown>;
 g.document = {};
 g.window = {
@@ -25,15 +62,21 @@ g.window = {
             has: (f: string) => clipboard.named.includes(f),
           },
         }
-      : undefined,
+      : m === "child_process"
+        ? childProcess
+        : undefined,
   setInterval: () => 1,
   clearInterval: () => {},
+  setTimeout: (fn: () => void) => timeouts.push(fn),
+  clearTimeout: () => {},
 };
 
 interface Setup {
   data?: unknown;
   dailyNotes?: { enabled: boolean; options?: Record<string, string> };
   plugins?: { enabledPlugins: Set<string>; plugins: Record<string, unknown> };
+  /** Klipper's history (newest first); Klipper is unreachable when left out. */
+  klipper?: string[];
 }
 
 async function setup(opts: Setup = {}) {
@@ -41,6 +84,10 @@ async function setup(opts: Setup = {}) {
   clipboard.text = "";
   clipboard.formats = ["text/plain"];
   clipboard.named = [];
+  klipper.reachable = opts.klipper !== undefined;
+  klipper.history = opts.klipper ?? [];
+  klipper.monitors = [];
+  timeouts.length = 0;
   const vault = new Vault();
   const app = {
     vault,
@@ -61,6 +108,7 @@ async function setup(opts: Setup = {}) {
   const plugin = new NotepadPlugin(app as never, {} as never);
   (plugin as unknown as { stored: unknown }).stored = opts.data ?? null;
   await plugin.onload();
+  await flush(); // the first Klipper read
   const poll = () => (plugin as unknown as { pollClipboard(): void }).pollClipboard();
   const stored = () => (plugin as unknown as { stored: Record<string, unknown> }).stored;
   return { app, vault, plugin, poll, stored };
@@ -172,6 +220,79 @@ test("copying an entry back puts it on the clipboard and moves it to the top wit
   assert.strictEqual(clipboard.text, "b");
   poll(); // the poller must not see its own write as a new copy
   assert.deepStrictEqual(plugin.clips.map((c) => c.text), ["b", "a"]);
+});
+
+// ── KDE clipboard history ──
+
+test("Klipper: the first read brings in its whole history and replaces the system clipboard poller", async () => {
+  const { plugin, stored } = await setup({
+    klipper: ["k1", "it's \"quoted\"\nline", "k2"],
+    data: { clips: [{ text: "k2", at: 5, pinned: true }, { text: "only in notepad", at: 1 }] },
+  });
+  assert.strictEqual(plugin.clipboardSource, "klipper");
+  assert.strictEqual((plugin as unknown as { watchTimer: number | null }).watchTimer, null);
+  assert.deepStrictEqual(plugin.clips, [
+    { text: "k1", at: plugin.clips[0].at, imported: true },
+    { text: "it's \"quoted\"\nline", at: plugin.clips[1].at, imported: true },
+    { text: "k2", at: 5, pinned: true },
+    { text: "only in notepad", at: 1 },
+  ]);
+  assert.strictEqual(stored().klipperTop, clipHash("k1"));
+});
+
+test("Klipper: a change signal adds the new copies with their real time", async () => {
+  const { plugin } = await setup({ klipper: ["k1"] });
+  klipper.history = ["k3", "k2", "k1"];
+  const before = Date.now();
+  klipper.monitors[0].signal();
+  await flush();
+  assert.deepStrictEqual(plugin.clips.map((c) => [c.text, !!c.imported]), [["k3", false], ["k2", false], ["k1", true]]);
+  assert.ok(plugin.clips[0].at >= before);
+});
+
+test("Klipper: on the next start only copies made while Obsidian was closed are added", async () => {
+  const { plugin } = await setup({
+    klipper: ["new2", "new1", "k1", "cleared in notepad"],
+    data: { klipperTop: clipHash("k1"), clips: [{ text: "k1", at: 7 }] },
+  });
+  assert.deepStrictEqual(plugin.clips.map((c) => [c.text, !!c.imported]), [["new2", true], ["new1", true], ["k1", false]]);
+});
+
+test("Klipper unreachable: the system clipboard is used and Klipper is tried again later", async () => {
+  const { plugin } = await setup(); // not reachable (e.g. no Flatpak permission)
+  assert.strictEqual(plugin.clipboardSource, "system");
+  assert.notStrictEqual((plugin as unknown as { watchTimer: number | null }).watchTimer, null);
+  assert.strictEqual(timeouts.length, 1);
+  klipper.reachable = true;
+  klipper.history = ["k1"];
+  timeouts[0]();
+  await flush();
+  assert.strictEqual(plugin.clipboardSource, "klipper");
+  assert.strictEqual((plugin as unknown as { watchTimer: number | null }).watchTimer, null);
+  assert.deepStrictEqual(plugin.clips.map((c) => c.text), ["k1"]);
+});
+
+test("Klipper going away falls back to the system clipboard", async () => {
+  const { plugin } = await setup({ klipper: ["k1"] });
+  klipper.monitors[0].exit();
+  assert.strictEqual(plugin.clipboardSource, "system");
+  assert.notStrictEqual((plugin as unknown as { watchTimer: number | null }).watchTimer, null);
+  assert.strictEqual(timeouts.length, 1);
+});
+
+test("turning the Klipper setting off, or unloading, stops the monitor; other settings leave it running", async () => {
+  const { plugin } = await setup({ klipper: ["k1"] });
+  const tab = new NotepadSettingTab(plugin.app, plugin);
+  await tab.setControlValue("accentColor", "#00ff00");
+  assert.strictEqual(klipper.monitors.length, 1);
+  assert.strictEqual(klipper.monitors[0].killed, false);
+  await tab.setControlValue("klipper", false);
+  assert.strictEqual(klipper.monitors[0].killed, true);
+  assert.strictEqual(plugin.clipboardSource, "system");
+
+  const second = await setup({ klipper: ["k1"] });
+  second.plugin.onunload();
+  assert.strictEqual(klipper.monitors[0].killed, true);
 });
 
 // ── notes ──

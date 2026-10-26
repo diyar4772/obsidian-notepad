@@ -64,7 +64,7 @@ export class PluginSettingTab {
 export class Setting {}
 export function setIcon(): void {}
 
-export const Platform = { isDesktopApp: true, isMobile: false };
+export const Platform = { isDesktopApp: true, isMobile: false, isLinux: true };
 
 export function normalizePath(p: string): string {
   return p.replace(/\/+/g, "/").replace(/^\/|\/$/g, "");

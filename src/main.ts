@@ -1,5 +1,6 @@
 import { debounce, Editor, MarkdownView, moment, normalizePath, Notice, Platform, Plugin, TFile, TFolder, WorkspaceLeaf } from "obsidian";
-import { Clip, fillDailyTemplate, isClip, isSecretCopy, noteBaseName, pushClip, SECRET_FORMATS, trimClips } from "./core";
+import { addClips, Clip, clipHash, fillDailyTemplate, isClip, isSecretCopy, mergeKlipperHistory, newKlipperItems, noteBaseName, pushClip, SECRET_FORMATS, trimClips } from "./core";
+import { ChildProcessLike, KlipperMonitor, loadChildProcess, readKlipperHistory } from "./klipper";
 import { DEFAULT_SETTINGS, NotepadSettings, NotepadSettingTab, sanitizeSettings, TAB_IDS, TabId } from "./settings";
 import { TimeboxIndex } from "./timebox";
 import { NotepadView, VIEW_TYPE } from "./ui/view";
@@ -11,7 +12,12 @@ interface StoredData {
   activeTab: TabId;
   /** Set once the view has been placed in the sidebar the first time. */
   placed: boolean;
+  /** `clipHash` of Klipper's newest entry at the last read, to tell what was copied while Obsidian was closed. */
+  klipperTop: string;
 }
+
+/** How long to wait before trying Klipper again after it wasn't reachable. */
+const KLIPPER_RETRY_MS = 60_000;
 
 interface ElectronClipboard {
   readText(): string;
@@ -53,6 +59,20 @@ export default class NotepadPlugin extends Plugin {
   private electronClipboard: ElectronClipboard | null = null;
   private lastClipboard = "";
   private watchTimer: number | null = null;
+  /** The clipboard settings the watcher was last started with. */
+  private watcherKey = "";
+  private childProcess: ChildProcessLike | null = null;
+  private klipperMonitor: KlipperMonitor | null = null;
+  /** Klipper's history at the last read, newest first. */
+  private klipperSnapshot: string[] | null = null;
+  private klipperTop = "";
+  /** Bumped whenever Klipper is started or stopped, so late results of an old start are dropped. */
+  private klipperGen = 0;
+  private klipperRetry: number | null = null;
+  private klipperSyncing = false;
+  private klipperSyncAgain = false;
+  /** Copies come from Klipper right now. */
+  klipperActive = false;
   private saveSoon = debounce(() => void this.persist(), 500, true);
 
   async onload(): Promise<void> {
@@ -115,6 +135,9 @@ export default class NotepadPlugin extends Plugin {
       } catch (e) {
         console.warn("[notepad] system clipboard is not available", e);
       }
+      if (Platform.isLinux) this.childProcess = loadChildProcess();
+      // Obsidian doesn't always unload plugins when it quits; don't leave `gdbus monitor` running.
+      this.registerDomEvent(window, "beforeunload", () => this.stopKlipper());
     }
     this.restartWatcher();
 
@@ -129,6 +152,7 @@ export default class NotepadPlugin extends Plugin {
   }
 
   onunload(): void {
+    this.stopKlipper();
     this.saveSoon.run();
   }
 
@@ -141,6 +165,7 @@ export default class NotepadPlugin extends Plugin {
     this.clips = Array.isArray(raw.clips) ? trimClips(raw.clips.filter(isClip), this.settings.clipboardMax) : [];
     this.activeTab = TAB_IDS.includes(raw.activeTab as TabId) ? (raw.activeTab as TabId) : "notes";
     this.placed = raw.placed === true;
+    this.klipperTop = typeof raw.klipperTop === "string" ? raw.klipperTop : "";
   }
 
   async persist(): Promise<void> {
@@ -150,6 +175,7 @@ export default class NotepadPlugin extends Plugin {
       clips: this.clips,
       activeTab: this.activeTab,
       placed: this.placed,
+      klipperTop: this.klipperTop,
     };
     await this.saveData(data);
   }
@@ -323,15 +349,47 @@ export default class NotepadPlugin extends Plugin {
 
   // ───────────────────────── clipboard ─────────────────────────
 
-  get systemClipboardAvailable(): boolean {
-    return this.electronClipboard !== null;
+  /** Where copies come from right now. */
+  get clipboardSource(): "off" | "klipper" | "system" | "obsidian" {
+    if (!this.settings.clipboardWatch) return "off";
+    if (this.klipperActive) return "klipper";
+    return this.electronClipboard ? "system" : "obsidian";
   }
 
+  /** Desktop Linux, where the KDE clipboard history can be read. */
+  get klipperSupported(): boolean {
+    return this.childProcess !== null;
+  }
+
+  /**
+   * Picks where copies come from: Klipper on KDE Plasma when it's reachable (it sees every copy),
+   * otherwise the system clipboard. Restarts only when a clipboard setting changed.
+   */
   private restartWatcher(): void {
+    const s = this.settings;
+    const key = `${s.clipboardWatch}|${s.klipper}|${s.clipboardInterval}`;
+    if (key === this.watcherKey) return;
+    this.watcherKey = key;
+    this.stopKlipper();
+    this.stopPoller();
+    if (!s.clipboardWatch) return;
+    if (s.klipper && this.childProcess) void this.startKlipper(); // falls back to the poller if unreachable
+    else this.startPoller();
+  }
+
+  private startPoller(): void {
+    if (this.watchTimer !== null || !this.electronClipboard) return;
+    try {
+      this.lastClipboard = this.electronClipboard.readText(); // what's there now was seen already
+    } catch {
+      // Read again on the first tick.
+    }
+    this.watchTimer = this.registerInterval(window.setInterval(() => this.pollClipboard(), this.settings.clipboardInterval));
+  }
+
+  private stopPoller(): void {
     if (this.watchTimer !== null) window.clearInterval(this.watchTimer);
     this.watchTimer = null;
-    if (!this.settings.clipboardWatch || !this.electronClipboard) return;
-    this.watchTimer = this.registerInterval(window.setInterval(() => this.pollClipboard(), this.settings.clipboardInterval));
   }
 
   private pollClipboard(): void {
@@ -347,6 +405,116 @@ export default class NotepadPlugin extends Plugin {
     this.lastClipboard = text;
     if (this.electronClipboard && isSecretOnClipboard(this.electronClipboard)) return;
     this.recordClip(text);
+  }
+
+  // ───────────────────────── KDE clipboard history ─────────────────────────
+
+  private async startKlipper(): Promise<void> {
+    const cp = this.childProcess;
+    if (!cp) return;
+    const gen = ++this.klipperGen;
+    let items: string[];
+    try {
+      items = await readKlipperHistory(cp);
+    } catch {
+      if (gen === this.klipperGen) this.klipperUnavailable(gen);
+      return;
+    }
+    if (gen !== this.klipperGen) return;
+    this.stopPoller();
+    this.applyKlipper(items, true);
+    this.klipperMonitor = new KlipperMonitor(
+      cp,
+      () => void this.syncKlipper(gen),
+      () => {
+        if (gen === this.klipperGen) this.klipperUnavailable(gen);
+      }
+    );
+    this.setKlipperActive(true);
+  }
+
+  /** Falls back to the system clipboard and tries Klipper again later (it may start after Obsidian, or come back after a Plasma restart). */
+  private klipperUnavailable(gen: number): void {
+    this.klipperMonitor?.stop();
+    this.klipperMonitor = null;
+    this.klipperSnapshot = null;
+    this.setKlipperActive(false);
+    this.startPoller();
+    this.clearKlipperRetry();
+    this.klipperRetry = window.setTimeout(() => {
+      this.klipperRetry = null;
+      if (gen === this.klipperGen) void this.startKlipper();
+    }, KLIPPER_RETRY_MS);
+  }
+
+  private stopKlipper(): void {
+    this.klipperGen++;
+    this.clearKlipperRetry();
+    this.klipperMonitor?.stop();
+    this.klipperMonitor = null;
+    this.klipperSnapshot = null;
+    this.setKlipperActive(false);
+  }
+
+  private clearKlipperRetry(): void {
+    if (this.klipperRetry !== null) window.clearTimeout(this.klipperRetry);
+    this.klipperRetry = null;
+  }
+
+  /** Reads Klipper again after it signalled a change; one read at a time, repeated if more changes came in. */
+  private async syncKlipper(gen: number): Promise<void> {
+    const cp = this.childProcess;
+    if (!cp) return;
+    if (this.klipperSyncing) {
+      this.klipperSyncAgain = true;
+      return;
+    }
+    this.klipperSyncing = true;
+    try {
+      do {
+        this.klipperSyncAgain = false;
+        const items = await readKlipperHistory(cp);
+        if (gen !== this.klipperGen) return;
+        this.applyKlipper(items, false);
+      } while (this.klipperSyncAgain);
+    } catch (e) {
+      console.warn("[notepad] couldn't read the KDE clipboard history", e);
+    } finally {
+      this.klipperSyncing = false;
+    }
+  }
+
+  /**
+   * Brings Klipper's entries into the history. `first`: the first read since Klipper was started.
+   * Then only what was copied while Obsidian was closed is added (everything, the very first time);
+   * the copy time of those is unknown, so they're marked imported.
+   */
+  private applyKlipper(items: string[], first: boolean): void {
+    const max = this.settings.clipboardMax;
+    const at = Date.now();
+    let next = this.clips;
+    if (!first) {
+      next = addClips(next, newKlipperItems(this.klipperSnapshot ?? [], items), at, max, false);
+    } else if (!this.klipperTop) {
+      next = mergeKlipperHistory(next, items, at, max);
+    } else {
+      const known = items.findIndex((t) => clipHash(t) === this.klipperTop);
+      const fresh = known >= 0 ? items.slice(0, known) : items.filter((t) => !next.some((c) => c.text === t));
+      next = addClips(next, fresh.reverse(), at, max, true);
+    }
+    this.klipperSnapshot = items;
+    this.klipperTop = items.length ? clipHash(items[0]) : "";
+    if (next !== this.clips) {
+      this.clips = next;
+      this.forEachView((v) => v.onClipsChanged());
+    }
+    this.saveSoon();
+  }
+
+  private setKlipperActive(active: boolean): void {
+    if (this.klipperActive === active) return;
+    this.klipperActive = active;
+    this.forEachView((v) => v.onClipboardSourceChanged());
   }
 
   private recordSelectionCopy(): void {

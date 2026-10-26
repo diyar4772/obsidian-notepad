@@ -10,6 +10,7 @@
   background-color: var(--np-bg);
   color: var(--np-text);
   overflow: hidden;
+  container-type: inline-size; /* narrow sidebars show icon-only tabs, see below */
 }
 
 /* ── tabs ── */
@@ -22,7 +23,8 @@
   flex-shrink: 0;
 }
 .notepad-tabs.is-hidden { display: none; }
-.notepad-tab {
+/* ".notepad-view" raises specificity above Obsidian's own button styles. */
+.notepad-view .notepad-tab {
   flex: 1 1 0;
   display: flex;
   align-items: center;
@@ -37,8 +39,8 @@
   font-size: var(--font-ui-small);
   cursor: pointer;
 }
-.notepad-tab:hover { color: var(--np-text); background-color: var(--background-modifier-hover); }
-.notepad-tab.is-active {
+.notepad-view .notepad-tab:hover { color: var(--np-text); background-color: var(--background-modifier-hover); }
+.notepad-view .notepad-tab.is-active {
   color: var(--np-accent);
   background-color: var(--background-primary);
   font-weight: var(--font-semibold);
@@ -46,6 +48,10 @@
 .notepad-tab-icon { display: flex; }
 .notepad-tab-icon svg { width: var(--icon-s); height: var(--icon-s); }
 .notepad-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@container (max-width: 360px) {
+  .notepad-view .notepad-tab:not(.is-active) { flex: 0 0 auto; padding-inline: var(--size-4-3); }
+  .notepad-tab:not(.is-active) .notepad-tab-label { display: none; }
+}
 
 /* ── shared ── */
 .notepad-body {
@@ -60,7 +66,7 @@
 .notepad-spacer { flex: 1; }
 .notepad-icon-button.is-armed { color: var(--text-error); background-color: var(--background-modifier-error-hover); }
 .notepad-icon-button.is-active { color: var(--np-accent); }
-.notepad-text-button {
+.notepad-view button.notepad-text-button {
   display: flex;
   align-items: center;
   gap: var(--size-2-2);
@@ -69,6 +75,7 @@
   font-size: var(--font-ui-small);
   cursor: pointer;
 }
+.notepad-view button.notepad-text-button:hover { background-color: var(--np-accent); filter: brightness(1.1); }
 .notepad-text-button svg { width: var(--icon-xs); height: var(--icon-xs); }
 .notepad-empty, .notepad-hint {
   color: var(--text-muted);
@@ -76,7 +83,8 @@
   text-align: center;
   padding: var(--size-4-2);
 }
-.notepad-hint { padding: 0; text-align: left; font-size: var(--font-ui-smaller); }
+.notepad-hint { padding: 0; text-align: left; font-size: var(--font-ui-smaller); display: flex; flex-direction: column; gap: var(--size-2-1); }
+.notepad-command { user-select: text; word-break: break-all; padding: var(--size-2-1) var(--size-2-2); border-radius: var(--radius-s); background-color: var(--background-primary); font-size: var(--font-ui-smaller); }
 .notepad-section { display: flex; flex-direction: column; gap: var(--size-2-2); }
 .notepad-section:empty { display: none; }
 .notepad-heading {
@@ -114,7 +122,7 @@
   gap: var(--size-2-2);
   padding: var(--size-2-3) var(--size-4-2);
   border-radius: var(--radius-m);
-  background-color: var(--background-secondary);
+  background-color: var(--background-primary); /* cards sit below the sidebar, like the text box */
   border-left: 3px solid transparent;
 }
 .notepad-clip.is-pinned { border-left-color: var(--np-accent); }
@@ -139,7 +147,7 @@
 .notepad-stat {
   padding: var(--size-4-2);
   border-radius: var(--radius-m);
-  background-color: var(--background-secondary);
+  background-color: var(--background-primary);
   text-align: center;
 }
 .notepad-stat-value { font-size: var(--font-ui-large); font-weight: var(--font-semibold); color: var(--np-accent); }
@@ -153,7 +161,7 @@
   cursor: pointer;
 }
 .notepad-session:hover { background-color: var(--background-modifier-hover); }
-.notepad-session.is-running { background-color: var(--background-secondary); border-left: 3px solid var(--np-accent); }
+.notepad-session.is-running { background-color: var(--background-primary); border-left: 3px solid var(--np-accent); }
 .notepad-session-info { flex: 1; min-width: 0; }
 .notepad-session-topic { font-size: var(--font-ui-small); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .notepad-session-meta { color: var(--text-faint); font-size: var(--font-ui-smaller); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
