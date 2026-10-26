@@ -3,10 +3,14 @@
 A tabbed panel for Obsidian's sidebar. Pick a tab at the top:
 
 - **Notes**: a scratch page for quick thoughts while you work on something else. It saves itself as you type. You can turn it into a note, add it to today's daily note (the one the Calendar plugin opens) or copy it.
-- **Clipboard**: a history of the text you copy. On desktop it records copies from any app while Obsidian is running. On mobile it records copies made inside Obsidian. Click an entry to copy it again, insert it into the open note, add it to the scratch page, pin it or remove it. Search included.
+- **Clipboard**: a history of the text you copy. On desktop it records copies from any app while Obsidian is running (see [Linux with Wayland](#linux-with-wayland) for a limit there). On mobile it records copies made inside Obsidian. Click an entry to copy it again, insert it into the open note, add it to the scratch page, pin it or remove it. Search included.
 - **Timebox**: works with the [Timebox](#timebox) plugin. It shows running sessions with a live timer and a finish button, today's and this week's totals, this week's time per topic, and finished sessions grouped by day. Click a session to jump to its note.
 
 On first start the panel opens under the Calendar view in the right sidebar, or in a new split in the right sidebar if Calendar isn't installed. You can drag it anywhere.
+
+### Linux with Wayland
+
+On a Wayland session (the default on Fedora, recent KDE Plasma and GNOME), Obsidian only sees the clipboard while its window is focused. Copies you make in other apps while Obsidian is in the background aren't seen one by one; when you switch back, only the last one is recorded. Copies made inside Obsidian are always recorded. Windows, macOS and Linux on X11 don't have this limit.
 
 ## Settings
 
@@ -39,7 +43,7 @@ Notepad finds sessions by reading the `timebox` blocks in your notes and updates
 ## Working with other plugins
 
 - **Timebox**: see above.
-- **Calendar / Daily notes**: "Add to today's daily note" uses the folder, date format and template from the Daily notes core plugin, so it lands in the same note Calendar opens.
+- **Calendar / Daily notes**: "Add to today's daily note" uses the folder, date format and template from the Daily notes core plugin, so it lands in the same note Calendar opens. When the note doesn't exist yet it is created from your template, with `{{date}}`, `{{time}}`, `{{title}}`, `{{yesterday}}`, `{{tomorrow}}` and `{{date:FORMAT}}` filled in like the core plugin does.
 - **API for other plugins**: `app.plugins.plugins.notepad.api` provides `appendToScratch(text)`, `getScratch()` and `getClipboardHistory()`.
 
 ## Privacy and permissions
@@ -55,7 +59,7 @@ Notepad makes no network requests. Everything stays in the plugin's `data.json` 
 ```bash
 npm install
 npm run dev    # watch build
-npm test       # core tests
+npm test       # core and plugin tests
 npm run build  # type check + production build
 ```
 

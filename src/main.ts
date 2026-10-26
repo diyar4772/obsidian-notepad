@@ -1,5 +1,5 @@
-import { debounce, Editor, MarkdownView, moment, normalizePath, Notice, Platform, Plugin, TFile, WorkspaceLeaf } from "obsidian";
-import { Clip, isClip, isSecretCopy, noteBaseName, pushClip, trimClips } from "./core";
+import { debounce, Editor, MarkdownView, moment, normalizePath, Notice, Platform, Plugin, TFile, TFolder, WorkspaceLeaf } from "obsidian";
+import { Clip, fillDailyTemplate, isClip, isSecretCopy, noteBaseName, pushClip, trimClips } from "./core";
 import { DEFAULT_SETTINGS, NotepadSettings, NotepadSettingTab, sanitizeSettings, TAB_IDS, TabId } from "./settings";
 import { TimeboxIndex } from "./timebox";
 import { NotepadView, VIEW_TYPE } from "./ui/view";
@@ -18,6 +18,14 @@ interface ElectronClipboard {
   availableFormats(): string[];
   writeText(text: string): void;
 }
+
+interface MomentLike {
+  add(amount: number, unit: string): MomentLike;
+  format(format: string): string;
+}
+
+// obsidian's `moment` export is typed loosely; these are the only calls Notepad needs.
+const now = () => (moment as unknown as () => MomentLike)();
 
 interface DailyNotesOptions {
   folder?: string;
@@ -145,16 +153,21 @@ export default class NotepadPlugin extends Plugin {
     await this.saveData(data);
   }
 
+  /**
+   * Doesn't trim the clipboard history: while the history size is being typed ("2" on the way to
+   * "200") that would delete entries. A smaller limit applies from the next copy on.
+   */
   async saveSettings(): Promise<void> {
-    this.clips = trimClips(this.clips, this.settings.clipboardMax);
     this.restartWatcher();
     await this.persist();
     this.forEachView((v) => v.refresh());
   }
 
-  setScratch(text: string): void {
+  /** `from` is the view the user typed in; the other open views are updated. */
+  setScratch(text: string, from?: NotepadView): void {
     this.scratch = text;
     this.saveSoon();
+    this.forEachView((v) => v !== from && v.syncScratch());
   }
 
   setActiveTab(tab: TabId): void {
@@ -196,7 +209,6 @@ export default class NotepadPlugin extends Plugin {
   appendToScratch(text: string): void {
     const sep = this.scratch && !this.scratch.endsWith("\n") ? "\n" : "";
     this.setScratch(this.scratch + sep + text);
-    this.forEachView((v) => v.refresh());
   }
 
   private addSelection(editor: Editor): void {
@@ -211,16 +223,34 @@ export default class NotepadPlugin extends Plugin {
       new Notice("The scratch page is empty.");
       return null;
     }
-    const folder = this.settings.saveFolder;
-    if (folder && !this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
-    const base = normalizePath(`${folder ? folder + "/" : ""}${noteBaseName(new Date())}`);
-    let path = `${base}.md`;
-    for (let i = 2; this.app.vault.getAbstractFileByPath(path); i++) path = `${base} ${i}.md`;
-    const file = await this.app.vault.create(path, text + "\n");
-    new Notice(`Saved as ${file.basename}.`);
-    if (this.settings.openSavedNote) await this.app.workspace.getLeaf("tab").openFile(file);
-    this.afterSave();
-    return file;
+    try {
+      const folder = this.settings.saveFolder;
+      if (folder) await this.ensureFolder(normalizePath(folder));
+      const base = normalizePath(`${folder ? folder + "/" : ""}${noteBaseName(new Date())}`);
+      let path = `${base}.md`;
+      for (let i = 2; this.app.vault.getAbstractFileByPath(path); i++) path = `${base} ${i}.md`;
+      const file = await this.app.vault.create(path, text + "\n");
+      new Notice(`Saved as ${file.basename}.`);
+      this.afterSave();
+      if (this.settings.openSavedNote) await this.app.workspace.getLeaf("tab").openFile(file);
+      return file;
+    } catch (e) {
+      console.error("[notepad] could not save the note", e);
+      new Notice(`Couldn't save the note: ${errorText(e)}`);
+      return null;
+    }
+  }
+
+  /** Creates the folder and any missing parents; fails if a file is in the way. */
+  private async ensureFolder(path: string): Promise<void> {
+    let current = "";
+    for (const part of path.split("/")) {
+      current = current ? `${current}/${part}` : part;
+      const existing = this.app.vault.getAbstractFileByPath(current);
+      if (existing instanceof TFolder) continue;
+      if (existing) throw new Error(`"${current}" is a file, not a folder.`);
+      await this.app.vault.createFolder(current);
+    }
   }
 
   dailyNotesEnabled(): boolean {
@@ -248,36 +278,45 @@ export default class NotepadPlugin extends Plugin {
       return;
     }
     const folder = (opts.folder ?? "").trim().replace(/^\/+|\/+$/g, "");
-    // obsidian's `moment` export is typed loosely; this is the only call we need.
-    const now = (moment as unknown as () => { format(f: string): string })();
-    const name = now.format(opts.format?.trim() || "YYYY-MM-DD");
+    const format = opts.format?.trim() || "YYYY-MM-DD";
+    const name = now().format(format);
     const path = normalizePath(`${folder ? folder + "/" : ""}${name}.md`);
+    const title = name.slice(name.lastIndexOf("/") + 1); // a format may contain folders, e.g. YYYY/MM/DD
 
-    let file = this.app.vault.getAbstractFileByPath(path);
-    if (!(file instanceof TFile)) {
-      let initial = "";
-      const tpl = opts.template?.trim();
-      if (tpl) {
-        const t = this.app.metadataCache.getFirstLinkpathDest(tpl, "");
-        if (t) initial = await this.app.vault.read(t);
+    try {
+      let file = this.app.vault.getAbstractFileByPath(path);
+      if (file && !(file instanceof TFile)) throw new Error(`"${path}" is a folder.`);
+      if (!file) {
+        let initial = "";
+        const tpl = opts.template?.trim();
+        if (tpl) {
+          const t = this.app.metadataCache.getFirstLinkpathDest(tpl, "");
+          if (t) {
+            const raw = await this.app.vault.read(t);
+            initial = fillDailyTemplate(raw, title, format, (f, amount = 0, unit = "d") => now().add(amount, unit).format(f));
+          } else {
+            new Notice(`Daily note template "${tpl}" was not found; the note was created empty.`);
+          }
+        }
+        const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+        if (dir) await this.ensureFolder(dir);
+        file = await this.app.vault.create(path, initial);
       }
-      const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
-      if (dir && !this.app.vault.getAbstractFileByPath(dir)) await this.app.vault.createFolder(dir);
-      file = await this.app.vault.create(path, initial);
+      if (!(file instanceof TFile)) return;
+      await this.app.vault.process(file, (old) => {
+        const sep = old === "" ? "" : old.endsWith("\n\n") ? "" : old.endsWith("\n") ? "\n" : "\n\n";
+        return old + sep + text + "\n";
+      });
+      new Notice(`Added to ${file.basename}.`);
+      this.afterSave();
+    } catch (e) {
+      console.error("[notepad] could not add to the daily note", e);
+      new Notice(`Couldn't add to the daily note: ${errorText(e)}`);
     }
-    if (!(file instanceof TFile)) return;
-    await this.app.vault.process(file, (old) => {
-      const sep = old === "" ? "" : old.endsWith("\n\n") ? "" : old.endsWith("\n") ? "\n" : "\n\n";
-      return old + sep + text + "\n";
-    });
-    new Notice(`Added to ${file.basename}.`);
-    this.afterSave();
   }
 
   private afterSave(): void {
-    if (!this.settings.clearAfterSave) return;
-    this.setScratch("");
-    this.forEachView((v) => v.refresh());
+    if (this.settings.clearAfterSave) this.setScratch("");
   }
 
   // ───────────────────────── clipboard ─────────────────────────
@@ -313,7 +352,12 @@ export default class NotepadPlugin extends Plugin {
 
   private recordSelectionCopy(): void {
     if (!this.settings.clipboardWatch || this.electronClipboard) return; // the poller sees it on desktop
-    const text = activeDocument.getSelection()?.toString() ?? "";
+    // Text fields keep their selection out of the document selection in some browsers.
+    const el = activeDocument.activeElement;
+    const text =
+      el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement
+        ? el.value.slice(el.selectionStart ?? 0, el.selectionEnd ?? 0)
+        : activeDocument.getSelection()?.toString() ?? "";
     this.recordClip(text);
   }
 
@@ -343,21 +387,18 @@ export default class NotepadPlugin extends Plugin {
   }
 
   /** Inserts text at the cursor of the most recently used note. */
-  insertIntoNote(text: string): void {
-    const view = this.recentMarkdownView();
+  async insertIntoNote(text: string): Promise<void> {
+    const view = await this.focusNoteForEditing();
     if (!view) {
       new Notice("Open a note first.");
       return;
     }
     view.editor.replaceSelection(text);
-    this.app.workspace.setActiveLeaf(view.leaf, { focus: true });
   }
 
+  /** A pinned entry that is unpinned counts toward the history size again from the next copy on. */
   togglePin(clip: Clip): void {
-    this.clips = trimClips(
-      this.clips.map((c) => (c === clip ? { ...c, pinned: !c.pinned || undefined } : c)),
-      this.settings.clipboardMax
-    );
+    this.clips = this.clips.map((c) => (c === clip ? { ...c, pinned: !c.pinned || undefined } : c));
     this.saveSoon();
     this.forEachView((v) => v.onClipsChanged());
   }
@@ -374,12 +415,41 @@ export default class NotepadPlugin extends Plugin {
     this.forEachView((v) => v.onClipsChanged());
   }
 
+  // ───────────────────────── timebox ─────────────────────────
+
+  /** Starts a session in the last used note with Timebox's own command. */
+  async startTimeboxSession(): Promise<void> {
+    const view = await this.focusNoteForEditing();
+    if (!view) {
+      new Notice("Open a note first to start a session.");
+      return;
+    }
+    const commands = (this.app as unknown as { commands?: { executeCommandById(id: string): boolean } }).commands;
+    if (!commands?.executeCommandById("timebox:start-session")) {
+      new Notice("Couldn't start a session. Click in a note and try again.");
+    }
+  }
+
   // ───────────────────────── helpers ─────────────────────────
 
-  recentMarkdownView(): MarkdownView | null {
+  /** The active note, or the last used one in the main area. */
+  private recentMarkdownView(): MarkdownView | null {
     const active = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (active) return active;
     const leaf = this.app.workspace.getMostRecentLeaf(this.app.workspace.rootSplit);
     return leaf?.view instanceof MarkdownView ? leaf.view : null;
   }
+
+  /** Focuses the last used note in editing mode (switching from reading view), so text can go in at the cursor. */
+  private async focusNoteForEditing(): Promise<MarkdownView | null> {
+    const view = this.recentMarkdownView();
+    if (!view) return null;
+    if (view.getMode() !== "source") await view.setState({ ...view.getState(), mode: "source" }, { history: false });
+    this.app.workspace.setActiveLeaf(view.leaf, { focus: true });
+    return view;
+  }
+}
+
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }

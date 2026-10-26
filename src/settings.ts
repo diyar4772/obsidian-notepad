@@ -76,7 +76,7 @@ type ColorKey = "accentColor" | "backgroundColor" | "textColor";
 
 const SAVE_FOLDER_DESC = "Folder for notes saved from the scratch page. Leave empty for the vault root.";
 const CLIPBOARD_DESC = Platform.isDesktopApp
-  ? "Remember text copied anywhere on the computer while Obsidian is running."
+  ? "Remember text you copy while Obsidian is running, in any app. On Linux with Wayland, copies made in other apps are only seen when you switch back to Obsidian."
   : "On mobile only copies made inside Obsidian are recorded.";
 
 export class NotepadSettingTab extends PluginSettingTab {

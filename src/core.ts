@@ -1,5 +1,7 @@
 // Pure logic. Must NOT import "obsidian" so it can be tested in Node.
 
+import { findBlocks } from "./timebox-core";
+
 // ───────────────────────── clipboard history ─────────────────────────
 
 export interface Clip {
@@ -90,40 +92,6 @@ export function noteBaseName(d: Date): string {
   return `Notepad ${dayKey(d)} ${pad(d.getHours())}.${pad(d.getMinutes())}`;
 }
 
-// Time formats accepted by Timebox: YYYY-MM-DD HH:mm(:ss) (T allowed), DD.MM.YYYY HH:mm(:ss), HH:mm(:ss).
-const RE_ISO = /^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/;
-const RE_EU = /^(\d{1,2})\.(\d{1,2})\.(\d{4}) (\d{1,2}):(\d{2})(?::(\d{2}))?$/;
-const RE_TIME = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/;
-
-function build(y: number, mo: number, day: number, h: number, mi: number, s: number): Date | null {
-  if (mo < 1 || mo > 12 || day < 1 || day > 31 || h > 23 || mi > 59 || s > 59) return null;
-  const d = new Date(2000, mo - 1, day, h, mi, s);
-  d.setFullYear(y);
-  if (d.getMonth() !== mo - 1 || d.getDate() !== day) return null;
-  return d;
-}
-
-/** Parses a Timebox time value. A bare time is placed on `dayOf`. */
-export function parseTime(raw: string, dayOf?: Date): { date: Date; bare: boolean } | null {
-  const v = raw.trim();
-  let m = RE_ISO.exec(v);
-  if (m) {
-    const d = build(+m[1], +m[2], +m[3], +m[4], +m[5], +(m[6] ?? 0));
-    return d && { date: d, bare: false };
-  }
-  m = RE_EU.exec(v);
-  if (m) {
-    const d = build(+m[3], +m[2], +m[1], +m[4], +m[5], +(m[6] ?? 0));
-    return d && { date: d, bare: false };
-  }
-  m = RE_TIME.exec(v);
-  if (m && dayOf) {
-    const d = build(dayOf.getFullYear(), dayOf.getMonth() + 1, dayOf.getDate(), +m[1], +m[2], +(m[3] ?? 0));
-    return d && { date: d, bare: true };
-  }
-  return null;
-}
-
 // ───────────────────────── timebox blocks ─────────────────────────
 
 export interface TimeboxSession {
@@ -136,73 +104,20 @@ export interface TimeboxSession {
   line: number;
 }
 
-const RE_OPEN = /^((?:[ \t]*>)*[ \t]*)(`{3,}|~{3,})[ \t]*timebox[ \t]*$/i;
-
 /**
- * Finds the `timebox` code blocks in a note and reads their sessions. This is a light,
- * read-only reader for statistics; the Timebox plugin itself owns writing the blocks.
- * Blocks without a valid start, and blocks that are never closed, are skipped.
+ * The sessions in a note's `timebox` blocks, read with Timebox's own parser (`timebox-core.ts`),
+ * so Notepad and Timebox always agree on which blocks are sessions: examples inside other code
+ * blocks, callouts, lists, unclosed and invalid blocks are handled exactly as Timebox does.
+ * Running sessions have no `end`.
  */
 export function readTimeboxSessions(text: string, dayOf?: Date): TimeboxSession[] {
-  const lines = text.split(/\r?\n/);
-  const out: TimeboxSession[] = [];
-  let outer: string | null = null; // fence of a non-timebox code block we are inside
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (outer) {
-      if (line.trim().startsWith(outer) && /^[`~]+$/.test(line.trim())) outer = null;
-      continue;
-    }
-    const open = RE_OPEN.exec(line);
-    if (!open) {
-      const other = /^(?:[ \t]*>)*[ \t]*(`{3,}|~{3,})/.exec(line);
-      if (other) outer = other[1];
-      continue;
-    }
-    const fence = open[2];
-    const body: string[] = [];
-    let closed = -1;
-    for (let j = i + 1; j < lines.length; j++) {
-      const inner = lines[j].replace(/^(?:[ \t]*>)*[ \t]*/, "");
-      if (inner.startsWith(fence[0].repeat(fence.length)) && /^[`~]+[ \t]*$/.test(inner)) {
-        closed = j;
-        break;
-      }
-      body.push(inner);
-    }
-    if (closed < 0) break;
-    const s = parseSessionBody(body, dayOf, i);
-    if (s) out.push(s);
-    i = closed;
-  }
-  return out;
-}
-
-function parseSessionBody(body: string[], dayOf: Date | undefined, line: number): TimeboxSession | null {
-  const fields: Record<string, string> = {};
-  for (const l of body) {
-    const m = /^([A-Za-z]+)[ \t]*:(.*)$/.exec(l.trim());
-    if (m) fields[m[1].toLowerCase()] = m[2].trim();
-  }
-  const start = fields.start ? parseTime(fields.start, dayOf) : null;
-  if (!start) return null;
-  let end: Date | undefined;
-  if (fields.end) {
-    const e = parseTime(fields.end, start.date);
-    if (e) {
-      end = e.date;
-      // A bare end earlier than the start crossed midnight.
-      if (e.bare && end < start.date) end = new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1, end.getHours(), end.getMinutes(), end.getSeconds());
-      if (end < start.date) end = undefined;
-    }
-  }
-  return {
-    topic: fields.topic || "",
-    start: start.date,
-    end,
-    mode: (fields.mode ?? "").toLowerCase().startsWith("pomo") ? "pomodoro" : "simple",
-    line,
-  };
+  return findBlocks(text, dayOf).map((b) => ({
+    topic: b.session.topic,
+    start: b.session.start,
+    end: b.session.end ?? undefined,
+    mode: b.session.mode,
+    line: b.openLine,
+  }));
 }
 
 /** Milliseconds of `s` that fall inside [from, to). A running session counts up to `now`. */
@@ -225,4 +140,27 @@ export function totalsByTopic(sessions: { topic: string; start: Date; end?: Date
     if (ms > 0) map.set(s.topic, (map.get(s.topic) ?? 0) + ms);
   }
   return [...map.entries()].map(([topic, ms]) => ({ topic, ms })).sort((a, b) => b.ms - a.ms);
+}
+
+// ───────────────────────── daily note template ─────────────────────────
+
+/** Formats "now" (shifted by `amount` `unit`s) with a moment.js format string. */
+export type DateFormatter = (format: string, amount?: number, unit?: string) => string;
+
+/**
+ * Fills a daily note template the way the Daily notes core plugin and the Calendar plugin do:
+ * {{date}} and {{title}} become the note name, {{time}} the time (HH:mm), {{yesterday}} and
+ * {{tomorrow}} the neighboring note names, and {{date:FORMAT}}, {{time:FORMAT}},
+ * {{date+1d:FORMAT}} use a custom format and offset.
+ */
+export function fillDailyTemplate(template: string, title: string, noteFormat: string, fmt: DateFormatter): string {
+  return template
+    .replace(/{{\s*(date|time)\s*(?:([+-]\d+)([yqmwdhs]))?\s*(?::(.+?))?\s*}}/gi, (_match: string, kind: string, amount?: string, unit?: string, format?: string) => {
+      if (!amount && !format) return kind.toLowerCase() === "date" ? title : fmt("HH:mm");
+      const f = format?.trim() || (kind.toLowerCase() === "date" ? noteFormat : "HH:mm");
+      return fmt(f, amount ? parseInt(amount, 10) : 0, unit);
+    })
+    .replace(/{{\s*title\s*}}/gi, title)
+    .replace(/{{\s*yesterday\s*}}/gi, () => fmt(noteFormat, -1, "d"))
+    .replace(/{{\s*tomorrow\s*}}/gi, () => fmt(noteFormat, 1, "d"));
 }

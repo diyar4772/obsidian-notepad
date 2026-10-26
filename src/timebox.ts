@@ -60,7 +60,8 @@ export class TimeboxIndex extends Events {
   private async readFile(file: TFile): Promise<void> {
     try {
       const text = await this.app.vault.cachedRead(file);
-      const found = /^[ \t>]*(`{3,}|~{3,})[ \t]*timebox/im.test(text)
+      // Cheap pre-check (a superset of real blocks) so notes without sessions skip the full parse.
+      const found = /(`{3,}|~{3,})[ \t]*timebox/i.test(text)
         ? readTimeboxSessions(text, new Date(file.stat.ctime)).map((s) => ({ ...s, path: file.path }))
         : [];
       if (found.length) this.cache.set(file.path, found);

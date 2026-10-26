@@ -18,5 +18,7 @@
     "types": ["node"],
     "lib": ["DOM", "ES5", "ES6", "ES7", "ES2018"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  // These run against a fake "obsidian" module (esbuild alias), so they're not type-checked against the real API.
+  "exclude": ["test/plugin.test.ts", "test/obsidian-mock.ts"]
 }

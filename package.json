@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-    "test": "node esbuild.config.mjs test && node .test-out/core.test.cjs",
+    "test": "node esbuild.config.mjs test && node .test-out/core.test.cjs && node .test-out/plugin.test.cjs",
     "typecheck": "tsc -noEmit -skipLibCheck",
     "version": "node version-bump.mjs && git add manifest.json versions.json"
   },

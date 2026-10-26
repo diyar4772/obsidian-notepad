@@ -1,5 +1,6 @@
 import { debounce, ItemView, Notice, setIcon, TFile, WorkspaceLeaf } from "obsidian";
-import { dayKey, formatClock, formatDuration, formatTimer, overlapMs, parseTime, startOfDay, startOfWeek, totalsByTopic } from "../core";
+import { dayKey, formatClock, formatDuration, formatTimer, overlapMs, startOfDay, startOfWeek, totalsByTopic } from "../core";
+import { parseStamp } from "../timebox-core";
 import type NotepadPlugin from "../main";
 import { TAB_IDS, TAB_LABELS, TabId } from "../settings";
 import { getTimebox, IndexedSession } from "../timebox";
@@ -20,6 +21,8 @@ export class NotepadView extends ItemView {
   private clipList: HTMLElement | null = null;
   private clipQuery = "";
   private timer: number | null = null;
+  /** Increases on every Timebox render, so a render that finished awaiting late doesn't draw over a newer one. */
+  private renderToken = 0;
   private renderTimeboxSoon = debounce(() => this.shown === "timebox" && void this.renderTimebox(), 300, true);
 
   constructor(leaf: WorkspaceLeaf, private plugin: NotepadPlugin) {
@@ -48,6 +51,9 @@ export class NotepadView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    this.shown = null;
+    this.renderTimeboxSoon.cancel();
+    this.renderToken++;
     this.stopTimer();
   }
 
@@ -77,17 +83,22 @@ export class NotepadView extends ItemView {
       this.body.createDiv({ cls: "notepad-empty", text: "All tabs are turned off. Turn one on in the settings." });
       return;
     }
-    if (current !== this.shown) this.show(current);
+    if (current !== this.shown || current === "clipboard") this.show(current); // clipboard hints depend on settings
     else if (current === "notes" && this.textarea) {
-      if (this.textarea.value !== this.plugin.scratch) this.textarea.value = this.plugin.scratch;
       this.textarea.style.setProperty("--notepad-font-size", `${this.plugin.settings.fontSize}px`);
-      this.updateCount();
-    } else if (current === "clipboard") this.renderClipList();
-    else if (current === "timebox") void this.renderTimebox();
+      this.syncScratch();
+    } else if (current === "timebox") void this.renderTimebox();
   }
 
   onClipsChanged(): void {
     if (this.shown === "clipboard") this.renderClipList();
+  }
+
+  /** Shows the current scratch text (changed elsewhere: another view, a command, the API). */
+  syncScratch(): void {
+    if (!this.textarea) return;
+    if (this.textarea.value !== this.plugin.scratch) this.textarea.value = this.plugin.scratch;
+    this.updateCount();
   }
 
   private applyColors(): void {
@@ -125,7 +136,7 @@ export class NotepadView extends ItemView {
     this.textarea.value = this.plugin.scratch;
     this.textarea.style.setProperty("--notepad-font-size", `${this.plugin.settings.fontSize}px`);
     this.textarea.addEventListener("input", () => {
-      this.plugin.setScratch(this.textarea?.value ?? "");
+      this.plugin.setScratch(this.textarea?.value ?? "", this);
       this.updateCount();
     });
     const footer = this.body.createDiv({ cls: "notepad-footer" });
@@ -136,13 +147,12 @@ export class NotepadView extends ItemView {
     if (this.plugin.dailyNotesEnabled()) {
       iconButton(bar, "calendar-plus", "Add to today's daily note", () => void this.plugin.addScratchToDailyNote());
     }
-    iconButton(bar, "copy", "Copy", () => void this.plugin.copyClip(this.plugin.scratch));
-    bar.createDiv({ cls: "notepad-spacer" });
-    confirmButton(bar, "eraser", "Clear", () => {
-      this.plugin.setScratch("");
-      if (this.textarea) this.textarea.value = "";
-      this.updateCount();
+    iconButton(bar, "copy", "Copy", () => {
+      if (this.plugin.scratch.trim()) void this.plugin.copyClip(this.plugin.scratch);
+      else new Notice("The scratch page is empty.");
     });
+    bar.createDiv({ cls: "notepad-spacer" });
+    confirmButton(bar, "eraser", "Clear", () => this.plugin.setScratch(""));
   }
 
   private updateCount(): void {
@@ -195,7 +205,7 @@ export class NotepadView extends ItemView {
       main.createDiv({ cls: "notepad-clip-meta", text: relativeTime(clip.at) + (clip.text.length > 200 ? ` · ${clip.text.length} characters` : "") });
       main.addEventListener("click", () => void this.plugin.copyClip(clip.text));
       const actions = row.createDiv({ cls: "notepad-clip-actions" });
-      iconButton(actions, "text-cursor-input", "Insert into note", () => this.plugin.insertIntoNote(clip.text));
+      iconButton(actions, "text-cursor-input", "Insert into note", () => void this.plugin.insertIntoNote(clip.text));
       iconButton(actions, "notebook-pen", "Add to scratch page", () => this.plugin.appendToScratch(clip.text));
       iconButton(actions, clip.pinned ? "pin-off" : "pin", clip.pinned ? "Unpin" : "Pin", () => this.plugin.togglePin(clip)).toggleClass(
         "is-active",
@@ -208,6 +218,7 @@ export class NotepadView extends ItemView {
   // ───────────────────────── timebox ─────────────────────────
 
   private async renderTimebox(): Promise<void> {
+    const token = ++this.renderToken;
     const timebox = getTimebox(this.app);
     const body = this.body;
     if (!timebox) {
@@ -219,65 +230,79 @@ export class NotepadView extends ItemView {
       return;
     }
     const sessions = await this.plugin.timeboxIndex.sessions();
-    if (this.shown !== "timebox" || this.body !== body) return;
+    if (token !== this.renderToken || this.shown !== "timebox") return;
     this.stopTimer();
+    const scroll = body.scrollTop; // redraws happen while reading the list; keep its position
     body.empty();
 
     const bar = body.createDiv({ cls: "notepad-toolbar" });
-    textButton(bar, "play", "Start session", () => this.startTimebox());
+    textButton(bar, "play", "Start session", () => void this.plugin.startTimeboxSession());
     bar.createDiv({ cls: "notepad-spacer" });
 
-    // Running sessions: Timebox's active list is the source of truth.
-    const activeEl = body.createDiv({ cls: "notepad-section" });
-    const timers: { el: HTMLElement; start: number }[] = [];
-    let signature = "";
-    const drawActive = () => {
-      activeEl.empty();
-      timers.length = 0;
-      signature = timebox.active.map((a) => a.path + a.start).join("|");
-      if (timebox.active.length === 0) return;
-      activeEl.createDiv({ cls: "notepad-heading", text: "Running" });
-      for (const a of timebox.active) {
-        const start = parseTime(a.start)?.date;
-        const row = activeEl.createDiv({ cls: "notepad-session is-running" });
-        const info = row.createDiv({ cls: "notepad-session-info" });
-        info.createDiv({ cls: "notepad-session-topic", text: a.topic || basename(a.path) });
-        info.createDiv({ cls: "notepad-session-meta", text: basename(a.path) + (a.mode === "pomodoro" ? " · pomodoro" : "") });
-        info.addEventListener("click", () => void this.openNote(a.path));
-        const t = row.createDiv({ cls: "notepad-timer" });
-        if (start) timers.push({ el: t, start: start.getTime() });
-        iconButton(row, "square", "Finish", () => {
-          void timebox.stopSession({ path: a.path, start: a.start }).then(drawActive);
-        });
-      }
-      tick();
-    };
-    const tick = () => {
-      if (timebox.active.map((a) => a.path + a.start).join("|") !== signature) {
-        drawActive();
-        return;
-      }
-      const now = Date.now();
-      for (const t of timers) t.el.setText(formatTimer(now - t.start));
-    };
-    drawActive();
-    this.timer = window.setInterval(tick, 1000);
-
-    // Only count unfinished blocks that Timebox is actually running; others are abandoned.
-    const running = new Set(timebox.active.map((a) => a.path + "\n" + a.start));
-    const counted = sessions.filter((s) => s.end || running.has(s.path + "\n" + stamp(s.start)));
+    // Running sessions come from Timebox's active list (the blocks in the notes can lag behind
+    // until the note is saved). Unfinished blocks Timebox isn't running are abandoned; they're not counted.
+    const running = () =>
+      timebox.active.flatMap((a) => {
+        const start = parseStamp(a.start);
+        return start ? [{ ...a, start, startStamp: a.start }] : [];
+      });
+    const finished = sessions.filter((s): s is IndexedSession & { end: Date } => !!s.end);
 
     const now = new Date();
     const today = startOfDay(now);
     const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
     const week = startOfWeek(now);
-    const sum = (from: Date) => counted.reduce((n, s) => n + overlapMs(s, from, tomorrow, now), 0);
+    const finishedSum = (from: Date) => finished.reduce((n, s) => n + overlapMs(s, from, tomorrow, now), 0);
+    const finishedToday = finishedSum(today);
+    const finishedWeek = finishedSum(week);
 
+    const activeEl = body.createDiv({ cls: "notepad-section" });
     const stats = body.createDiv({ cls: "notepad-stats" });
-    stat(stats, "Today", formatDuration(sum(today)));
-    stat(stats, "This week", formatDuration(sum(week)));
+    const todayEl = stat(stats, "Today");
+    const weekEl = stat(stats, "This week");
 
-    const topics = totalsByTopic(counted, week, tomorrow, now).slice(0, 6);
+    const timers: { el: HTMLElement; start: number }[] = [];
+    let signature = "";
+    const signatureOf = () => timebox.active.map((a) => a.path + "\n" + a.start).join("|");
+    const drawActive = () => {
+      activeEl.empty();
+      timers.length = 0;
+      signature = signatureOf();
+      const list = running();
+      if (list.length === 0) return;
+      activeEl.createDiv({ cls: "notepad-heading", text: "Running" });
+      for (const a of list) {
+        const row = activeEl.createDiv({ cls: "notepad-session is-running" });
+        const info = row.createDiv({ cls: "notepad-session-info" });
+        info.createDiv({ cls: "notepad-session-topic", text: a.topic || basename(a.path) });
+        info.createDiv({ cls: "notepad-session-meta", text: basename(a.path) + (a.mode === "pomodoro" ? " · pomodoro" : "") });
+        info.addEventListener("click", () => void this.openNote(a.path));
+        timers.push({ el: row.createDiv({ cls: "notepad-timer" }), start: a.start.getTime() });
+        const finish = iconButton(row, "square", "Finish", () => {
+          finish.setAttr("disabled", "true");
+          void timebox.stopSession({ path: a.path, start: a.startStamp }).then(drawActive);
+        });
+      }
+    };
+    const tick = () => {
+      const t = new Date();
+      if (t >= tomorrow) {
+        void this.renderTimebox(); // a new day: Today, This week and History start over
+        return;
+      }
+      if (signatureOf() !== signature) drawActive();
+      for (const x of timers) x.el.setText(formatTimer(t.getTime() - x.start));
+      // Totals grow while a session runs.
+      const list = running();
+      const runningSum = (from: Date) => list.reduce((n, s) => n + overlapMs(s, from, tomorrow, t), 0);
+      todayEl.setText(formatDuration(finishedToday + runningSum(today)));
+      weekEl.setText(formatDuration(finishedWeek + runningSum(week)));
+    };
+    drawActive();
+    tick();
+    this.timer = window.setInterval(tick, 1000);
+
+    const topics = totalsByTopic([...finished, ...running()], week, tomorrow, now).slice(0, 6);
     if (topics.length) {
       const sec = body.createDiv({ cls: "notepad-section" });
       sec.createDiv({ cls: "notepad-heading", text: "This week by topic" });
@@ -292,21 +317,18 @@ export class NotepadView extends ItemView {
       }
     }
 
-    // Finished sessions of the last N days, newest first, grouped by day.
+    // Finished sessions of the last N days, newest first, grouped by the day they started.
     const from = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (this.plugin.settings.timeboxDays - 1));
-    const finished = sessions
-      .filter((s): s is IndexedSession & { end: Date } => !!s.end && s.end >= from)
-      .sort((a, b) => b.start.getTime() - a.start.getTime());
+    const recent = finished.filter((s) => s.end >= from).sort((a, b) => b.start.getTime() - a.start.getTime());
     const hist = body.createDiv({ cls: "notepad-section" });
     hist.createDiv({ cls: "notepad-heading", text: "History" });
-    if (finished.length === 0) {
+    if (recent.length === 0) {
       hist.createDiv({ cls: "notepad-empty", text: "No finished sessions yet." });
-      return;
     }
     let currentDay = "";
     let dayTotalEl: HTMLElement | null = null;
     let dayTotal = 0;
-    for (const s of finished) {
+    for (const s of recent) {
       const key = dayKey(s.start);
       if (key !== currentDay) {
         currentDay = key;
@@ -324,16 +346,7 @@ export class NotepadView extends ItemView {
       row.createDiv({ cls: "notepad-session-duration", text: formatDuration(s.end.getTime() - s.start.getTime()) });
       row.addEventListener("click", () => void this.openNote(s.path, s.line));
     }
-  }
-
-  private startTimebox(): void {
-    const view = this.plugin.recentMarkdownView();
-    if (!view) {
-      new Notice("Open a note first to start a session.");
-      return;
-    }
-    this.app.workspace.setActiveLeaf(view.leaf, { focus: true });
-    (this.app as unknown as { commands: { executeCommandById(id: string): boolean } }).commands.executeCommandById("timebox:start-session");
+    body.scrollTop = scroll;
   }
 
   private async openNote(path: string, line?: number): Promise<void> {
@@ -385,22 +398,17 @@ function confirmButton(parent: HTMLElement, icon: string, label: string, onConfi
   return b;
 }
 
-function stat(parent: HTMLElement, label: string, value: string): void {
+/** A stat tile; returns the value element. */
+function stat(parent: HTMLElement, label: string): HTMLElement {
   const el = parent.createDiv({ cls: "notepad-stat" });
-  el.createDiv({ cls: "notepad-stat-value", text: value });
+  const value = el.createDiv({ cls: "notepad-stat-value" });
   el.createDiv({ cls: "notepad-stat-label", text: label });
+  return value;
 }
 
 function basename(path: string): string {
   const name = path.slice(path.lastIndexOf("/") + 1);
   return name.endsWith(".md") ? name.slice(0, -3) : name;
-}
-
-const pad = (n: number) => String(n).padStart(2, "0");
-
-/** Timebox's `formatStamp`: "YYYY-MM-DD HH:mm:ss". */
-function stamp(d: Date): string {
-  return `${dayKey(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 function dayLabel(d: Date, today: Date): string {

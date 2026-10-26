@@ -3,13 +3,13 @@
 import * as assert from "assert";
 import {
   Clip,
+  fillDailyTemplate,
   formatDuration,
   formatTimer,
   isSecretCopy,
   MAX_CLIP_LENGTH,
   noteBaseName,
   overlapMs,
-  parseTime,
   pushClip,
   readTimeboxSessions,
   startOfWeek,
@@ -69,16 +69,6 @@ test("formatDuration and formatTimer", () => {
   assert.strictEqual(formatDuration(-5), "0m");
   assert.strictEqual(formatTimer(65_000), "01:05");
   assert.strictEqual(formatTimer(3_725_000), "01:02:05");
-});
-
-test("parseTime accepts Timebox formats and rejects invalid dates", () => {
-  assert.deepStrictEqual(parseTime("2026-09-28 18:29:05")?.date, d(2026, 9, 28, 18, 29, 5));
-  assert.deepStrictEqual(parseTime("2026-09-28T18:29")?.date, d(2026, 9, 28, 18, 29));
-  assert.deepStrictEqual(parseTime("28.09.2026 18:29")?.date, d(2026, 9, 28, 18, 29));
-  assert.deepStrictEqual(parseTime("18:29", d(2026, 1, 2)), { date: d(2026, 1, 2, 18, 29), bare: true });
-  assert.strictEqual(parseTime("18:29"), null);
-  assert.strictEqual(parseTime("31.02.2026 10:00"), null);
-  assert.strictEqual(parseTime("2026-01-01 25:00"), null);
 });
 
 test("startOfWeek is Monday", () => {
@@ -143,6 +133,67 @@ test("readTimeboxSessions handles CRLF and an unclosed block", () => {
   const r = readTimeboxSessions("```timebox\r\ntopic: A\r\nstart: 2026-01-01 10:00\r\nend: 2026-01-01 11:00\r\n```\r\n```timebox\r\nstart: 2026-01-01 12:00");
   assert.strictEqual(r.length, 1);
   assert.strictEqual(r[0].topic, "A");
+});
+
+test("readTimeboxSessions: a code block inside a callout ends with the callout", () => {
+  const text = [
+    "> [!example]",
+    "> ```markdown",
+    "> not closed inside the quote",
+    "",
+    "```timebox",
+    "topic: After callout",
+    "start: 2026-01-01 10:00",
+    "end: 2026-01-01 10:30",
+    "```",
+  ].join("\n");
+  assert.deepStrictEqual(readTimeboxSessions(text).map((s) => s.topic), ["After callout"]);
+});
+
+test("readTimeboxSessions: a timebox block in a callout closes implicitly when the callout ends", () => {
+  const text = ["> ```timebox", "> topic: Quoted", "> start: 2026-01-01 10:00", "> end: 2026-01-01 11:00", "", "Paragraph"].join("\n");
+  const r = readTimeboxSessions(text);
+  assert.strictEqual(r.length, 1);
+  assert.strictEqual(r[0].topic, "Quoted");
+});
+
+test("readTimeboxSessions: fence rules", () => {
+  // A closing fence must use the same character and be at least as long, with nothing after it.
+  const text = [
+    "````timebox",
+    "topic: Long fence",
+    "start: 2026-01-01 10:00",
+    "```",
+    "~~~~",
+    "```` trailing",
+    "end: 2026-01-01 11:00",
+    "````",
+    "```timebox`",
+    "start: 2026-01-01 12:00",
+    "```",
+  ].join("\n");
+  const r = readTimeboxSessions(text);
+  assert.strictEqual(r.length, 1);
+  assert.strictEqual(r[0].topic, "Long fence");
+  assert.deepStrictEqual(r[0].end, d(2026, 1, 1, 11));
+  // "```timebox`" is inline code, not a fence, so its lines are ignored.
+});
+
+test("readTimeboxSessions: a full-date end before the start is an invalid block, as in Timebox", () => {
+  assert.strictEqual(readTimeboxSessions("```timebox\nstart: 2026-01-02 10:00\nend: 2026-01-01 11:00\n```").length, 0);
+});
+
+test("fillDailyTemplate matches the daily notes placeholders", () => {
+  const calls: string[] = [];
+  const fmt = (f: string, amount = 0, unit = "") => {
+    calls.push(`${f}|${amount}${unit}`);
+    return `<${f}${amount ? (amount > 0 ? "+" : "") + amount + unit : ""}>`;
+  };
+  const tpl = "# {{title}}\n{{date}} {{ time }}\n{{date:dddd}} {{time:HH}}\n{{date+1d:YYYY}} {{yesterday}} {{tomorrow}}\n{{other}}";
+  assert.strictEqual(
+    fillDailyTemplate(tpl, "2026-10-26", "YYYY-MM-DD", fmt),
+    "# 2026-10-26\n2026-10-26 <HH:mm>\n<dddd> <HH>\n<YYYY+1d> <YYYY-MM-DD-1d> <YYYY-MM-DD+1d>\n{{other}}"
+  );
 });
 
 test("overlapMs and totalsByTopic clip sessions to the range and count running ones up to now", () => {
